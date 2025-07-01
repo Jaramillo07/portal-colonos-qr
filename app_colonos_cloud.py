@@ -23,6 +23,19 @@ CONFIG = {
     'HORARIO_FIN': time(23, 0),    # 11:00 PM
 }
 
+def get_mexico_date():
+    """Obtiene la fecha actual en zona horaria de México (UTC-6)"""
+    try:
+        # Obtener fecha/hora UTC
+        utc_now = datetime.utcnow()
+        # Restar 6 horas para México (Central Time)
+        mexico_now = utc_now - timedelta(hours=6)
+        return mexico_now.date()
+    except Exception as e:
+        logger.error(f"Error obteniendo fecha México: {e}")
+        # Fallback: usar date.today()
+        return date.today()
+
 def get_google_credentials():
     """Obtiene las credenciales de Google desde Streamlit secrets o archivo local"""
     try:
@@ -427,8 +440,8 @@ def vehicular_qr_generator():
         col1, col2 = st.columns(2)
         
         with col1:
-            # Obtener fecha actual y asegurar que funcione correctamente
-            hoy = date.today()
+            # Obtener fecha actual en zona horaria de México
+            hoy = get_mexico_date()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
                 value=hoy,
@@ -441,9 +454,12 @@ def vehicular_qr_generator():
         with col2:
             st.markdown("⏰ **Horario disponible: 6:00 AM - 11:00 PM**")
             st.info("📅 Puedes programar hasta 60 días adelante")
-            # Debug fecha actual
-            hoy_debug = date.today()
-            st.caption(f"🗓️ Hoy es: {hoy_debug.strftime('%d/%m/%Y')}")
+            # Debug fecha actual - México
+            hoy_debug = get_mexico_date()
+            st.caption(f"🗓️ Hoy es: {hoy_debug.strftime('%d/%m/%Y')} (México)")
+            # Debug comparación
+            utc_debug = date.today()
+            st.caption(f"🌍 UTC: {utc_debug.strftime('%d/%m/%Y')}")
             st.info("📅 Puedes programar hasta 30 días adelante")
         
         col1, col2 = st.columns(2)
@@ -581,8 +597,8 @@ def peatonal_registration():
         col1, col2 = st.columns(2)
         
         with col1:
-            # Obtener fecha actual y asegurar que funcione correctamente
-            hoy = date.today()
+            # Obtener fecha actual en zona horaria de México
+            hoy = get_mexico_date()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
                 value=hoy,
