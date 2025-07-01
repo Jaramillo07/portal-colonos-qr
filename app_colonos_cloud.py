@@ -571,6 +571,15 @@ def peatonal_registration():
     st.subheader("🚶 Registrar Visitante Peatonal")
     st.info("💡 Para visitantes que ingresan a pie (sin vehículo) - No requiere QR")
     
+    # Selector de tipo de visitante
+    tipo_visitante = st.radio(
+        "🔘 Tipo de visitante:",
+        ["👤 Visitante único (un día)", "🔄 Visitante recurrente (varios días)"],
+        key="tipo_visitante_peatonal"
+    )
+    
+    es_recurrente = "recurrente" in tipo_visitante
+    
     with st.form("peatonal_registration_form", clear_on_submit=True):
         # Información del visitante
         st.markdown("**📝 Datos del Visitante:**")
@@ -580,16 +589,25 @@ def peatonal_registration():
         with col1:
             nombre_visitante = st.text_input(
                 "👤 Nombre del Visitante:",
-                placeholder="Ej: María González",
+                placeholder="Ej: María González" if not es_recurrente else "Ej: María González (Limpieza)",
                 key="peatonal_visitor_name"
             )
         
         with col2:
-            telefono_visitante = st.text_input(
-                "📱 Teléfono (opcional):",
-                placeholder="Ej: 477-123-4567",
-                key="peatonal_visitor_phone"
-            )
+            if es_recurrente:
+                tipo_servicio = st.selectbox(
+                    "🔧 Tipo de servicio:",
+                    ["Limpieza", "Jardinería", "Mantenimiento", "Seguridad", "Delivery", "Otro"],
+                    key="peatonal_service_type"
+                )
+                telefono_visitante = ""  # No se usa para recurrentes
+            else:
+                telefono_visitante = st.text_input(
+                    "📱 Teléfono (opcional):",
+                    placeholder="Ej: 477-123-4567",
+                    key="peatonal_visitor_phone"
+                )
+                tipo_servicio = ""  # No se usa para únicos
         
         # Fecha y horario
         st.markdown("**📅 Horario Autorizado:**")
@@ -614,43 +632,86 @@ def peatonal_registration():
         col1, col2 = st.columns(2)
         
         with col1:
-            hora_inicio_str = st.selectbox(
-                "🕕 Hora de inicio:",
-                options=[
-                    "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
-                    "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
-                    "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
-                ],
-                index=3,  # 09:00 por defecto
-                key="peatonal_start_time"
-            )
+            if es_recurrente:
+                hora_inicio_str = st.selectbox(
+                    "🕕 Hora de inicio diaria:",
+                    options=[
+                        "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+                        "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+                        "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
+                    ],
+                    index=2,  # 08:00 por defecto
+                    key="peatonal_recurrent_start_time"
+                )
+            else:
+                hora_inicio_str = st.selectbox(
+                    "🕕 Hora de inicio:",
+                    options=[
+                        "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+                        "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+                        "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
+                    ],
+                    index=3,  # 09:00 por defecto
+                    key="peatonal_start_time"
+                )
             hora_inicio = time(int(hora_inicio_str.split(':')[0]), int(hora_inicio_str.split(':')[1]))
         
         with col2:
-            hora_fin_str = st.selectbox(
-                "🕙 Hora de fin:",
-                options=[
-                    "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
-                    "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
-                    "19:00", "20:00", "21:00", "22:00", "23:00"
-                ],
-                index=11,  # 18:00 por defecto
-                key="peatonal_end_time"
-            )
+            if es_recurrente:
+                hora_fin_str = st.selectbox(
+                    "🕙 Hora de fin diaria:",
+                    options=[
+                        "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
+                        "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
+                        "19:00", "20:00", "21:00", "22:00", "23:00"
+                    ],
+                    index=10,  # 17:00 por defecto
+                    key="peatonal_recurrent_end_time"
+                )
+            else:
+                hora_fin_str = st.selectbox(
+                    "🕙 Hora de fin:",
+                    options=[
+                        "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
+                        "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
+                        "19:00", "20:00", "21:00", "22:00", "23:00"
+                    ],
+                    index=11,  # 18:00 por defecto
+                    key="peatonal_end_time"
+                )
             hora_fin = time(int(hora_fin_str.split(':')[0]), int(hora_fin_str.split(':')[1]))
         
         # Observaciones
-        observaciones = st.text_area(
-            "📝 Observaciones (opcional):",
-            placeholder="Ej: Viene a recoger documentos, visita familiar, etc.",
-            key="peatonal_observations",
-            max_chars=200
-        )
+        if es_recurrente:
+            observaciones = st.text_area(
+                "📝 Descripción del servicio:",
+                placeholder="Ej: Limpieza general de la casa, viene lunes, miércoles y viernes",
+                key="peatonal_recurrent_observations",
+                max_chars=200
+            )
+            
+            # Información adicional para recurrentes
+            st.info(f"""
+            ℹ️ **Visitante Recurrente - {duracion_dias}:**
+            - 📅 **Período:** {fecha_inicio.strftime('%d/%m/%Y')} al {fecha_fin.strftime('%d/%m/%Y')}
+            - ⏰ **Horario diario:** {hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}
+            - 📝 **Cada entrada/salida** se registrará por separado en los logs
+            """)
+        else:
+            observaciones = st.text_area(
+                "📝 Observaciones (opcional):",
+                placeholder="Ej: Viene a recoger documentos, visita familiar, etc.",
+                key="peatonal_observations",
+                max_chars=200
+            )
         
         # Botón registrar
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
-            register_btn = st.form_submit_button("👥 Registrar Visitante Peatonal", type="primary", use_container_width=True)
+            if es_recurrente:
+                register_btn = st.form_submit_button("🔄 Registrar Visitante Recurrente", type="primary", use_container_width=True)
+            else:
+                register_btn = st.form_submit_button("👥 Registrar Visitante Peatonal", type="primary", use_container_width=True)
         
         # Procesar formulario
         if register_btn:
@@ -678,44 +739,84 @@ def peatonal_registration():
                 # Registrar visitante peatonal
                 with st.spinner("Registrando visitante peatonal..."):
                     try:
-                        # Crear fechas completas
-                        fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
-                        fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
-                        
-                        fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
-                        fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
-                        
-                        # Crear nombre completo con observaciones si las hay
-                        nombre_completo = nombre_visitante.strip()
-                        if telefono_visitante.strip():
-                            nombre_completo += f" ({telefono_visitante.strip()})"
-                        if observaciones.strip():
-                            nombre_completo += f" - {observaciones.strip()}"
-                        
-                        # Agregar a Google Sheets
-                        success = sheets_manager.add_peatonal_visitor(
-                            nombre_completo,  # Se guarda en campo codigo_qr
-                            get_current_colono(),
-                            fecha_inicio_str,
-                            fecha_fin_str
-                        )
-                        
-                        if success:
-                            # Guardar datos en session_state para mostrar confirmación
-                            st.session_state.peatonal_registered = True
-                            st.session_state.peatonal_data = {
-                                'visitante': nombre_visitante,
-                                'telefono': telefono_visitante,
-                                'colono': get_current_colono(),
-                                'fecha': fecha_visita.strftime('%d/%m/%Y'),
-                                'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
-                                'observaciones': observaciones
-                            }
-                            st.success("✅ Visitante peatonal registrado exitosamente")
+                        if es_recurrente:
+                            # VISITANTE RECURRENTE
+                            # Crear fechas completas para el período completo
+                            fecha_inicio_completa = datetime.combine(fecha_inicio, hora_inicio)
+                            fecha_fin_completa = datetime.combine(fecha_fin, hora_fin)
                             
+                            fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
+                            fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            # Crear nombre completo con información del servicio
+                            nombre_completo = f"{nombre_visitante.strip()} ({tipo_servicio})"
+                            if observaciones.strip():
+                                nombre_completo += f" - {observaciones.strip()}"
+                            
+                            # Agregar RECURRENTE a Google Sheets 
+                            success = sheets_manager.add_peatonal_visitor(
+                                nombre_completo,  # Se guarda en campo codigo_qr
+                                get_current_colono(),
+                                fecha_inicio_str,
+                                fecha_fin_str
+                            )
+                            
+                            if success:
+                                # Guardar datos en session_state para mostrar confirmación
+                                st.session_state.peatonal_registered = True
+                                st.session_state.peatonal_data = {
+                                    'visitante': nombre_visitante,
+                                    'tipo_servicio': tipo_servicio,
+                                    'colono': get_current_colono(),
+                                    'fecha_inicio': fecha_inicio.strftime('%d/%m/%Y'),
+                                    'fecha_fin': fecha_fin.strftime('%d/%m/%Y'),
+                                    'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
+                                    'observaciones': observaciones,
+                                    'es_recurrente': True,
+                                    'duracion': duracion_dias
+                                }
+                                st.success("✅ Visitante recurrente registrado exitosamente")
                         else:
+                            # VISITANTE ÚNICO (lógica original)
+                            # Crear fechas completas
+                            fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
+                            fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
+                            
+                            fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
+                            fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
+                            
+                            # Crear nombre completo con observaciones si las hay
+                            nombre_completo = nombre_visitante.strip()
+                            if telefono_visitante.strip():
+                                nombre_completo += f" ({telefono_visitante.strip()})"
+                            if observaciones.strip():
+                                nombre_completo += f" - {observaciones.strip()}"
+                            
+                            # Agregar a Google Sheets
+                            success = sheets_manager.add_peatonal_visitor(
+                                nombre_completo,  # Se guarda en campo codigo_qr
+                                get_current_colono(),
+                                fecha_inicio_str,
+                                fecha_fin_str
+                            )
+                            
+                            if success:
+                                # Guardar datos en session_state para mostrar confirmación
+                                st.session_state.peatonal_registered = True
+                                st.session_state.peatonal_data = {
+                                    'visitante': nombre_visitante,
+                                    'telefono': telefono_visitante,
+                                    'colono': get_current_colono(),
+                                    'fecha': fecha_visita.strftime('%d/%m/%Y'),
+                                    'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
+                                    'observaciones': observaciones,
+                                    'es_recurrente': False
+                                }
+                                st.success("✅ Visitante peatonal registrado exitosamente")
+                            
+                        if not success:
                             st.error("❌ Error al registrar visitante en el sistema")
-                    
+                            
                     except Exception as e:
                         st.error(f"❌ Error registrando visitante: {str(e)}")
                         logger.error(f"Error en registro peatonal: {e}")
@@ -831,41 +932,86 @@ def main_app():
             peatonal_data = st.session_state.peatonal_data
             
             st.markdown("---")
-            st.subheader("✅ Visitante Peatonal Registrado")
             
-            col1, col2 = st.columns([1, 1])
-            
-            with col1:
-                st.markdown("**📋 Información del Registro:**")
-                st.write(f"**Visitante:** {peatonal_data['visitante']}")
-                if peatonal_data['telefono']:
-                    st.write(f"**Teléfono:** {peatonal_data['telefono']}")
-                st.write(f"**Autorizado por:** {peatonal_data['colono']}")
-                st.write(f"**Fecha:** {peatonal_data['fecha']}")
-                st.write(f"**Horario:** {peatonal_data['horario']}")
-                if peatonal_data['observaciones']:
-                    st.write(f"**Observaciones:** {peatonal_data['observaciones']}")
-            
-            with col2:
-                st.markdown("**🚶 Acceso Peatonal**")
-                st.info("""
-                ✅ **El visitante ya está autorizado**
+            if peatonal_data.get('es_recurrente', False):
+                # CONFIRMACIÓN VISITANTE RECURRENTE
+                st.subheader("🔄 Visitante Recurrente Registrado")
                 
-                No necesita QR, solo debe:
-                1. 🚶 Llegar a la entrada peatonal
-                2. 🗣️ Identificarse con el guardia
-                3. ✅ El guardia confirmará su autorización
-                4. 🚪 Acceso permitido en horario indicado
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("**📋 Información del Registro:**")
+                    st.write(f"**👤 Visitante:** {peatonal_data['visitante']}")
+                    st.write(f"**🔧 Servicio:** {peatonal_data['tipo_servicio']}")
+                    st.write(f"**👨‍💼 Autorizado por:** {peatonal_data['colono']}")
+                    st.write(f"**📅 Período:** {peatonal_data['fecha_inicio']} al {peatonal_data['fecha_fin']}")
+                    st.write(f"**⏰ Horario diario:** {peatonal_data['horario']}")
+                    st.write(f"**📆 Duración:** {peatonal_data['duracion']}")
+                    if peatonal_data.get('observaciones'):
+                        st.write(f"**📝 Descripción:** {peatonal_data['observaciones']}")
+                
+                with col2:
+                    st.markdown("**🔄 Acceso Recurrente**")
+                    st.success("""
+                    ✅ **Visitante autorizado por todo el período**
+                    
+                    📋 **Funcionamiento:**
+                    1. 🚶 Puede venir cualquier día del período
+                    2. 🗣️ Se identifica con el guardia cada vez
+                    3. ✅ El guardia marca entrada/salida diaria
+                    4. 📝 Cada visita se registra por separado
+                    5. ⏰ Solo en el horario autorizado
+                    """)
+                
+                # Instrucciones específicas para recurrentes
+                st.markdown("---")
+                st.info(f"""
+                📋 **¡Registro recurrente completado exitosamente!**
+                
+                🔄 **Para el visitante:** Puede venir cualquier día del {peatonal_data['fecha_inicio']} al {peatonal_data['fecha_fin']}
+                
+                📝 **Para el guardia:** Cada entrada/salida se registra individualmente en los logs diarios
+                
+                ⏰ **Horario:** Solo puede ingresar de {peatonal_data['horario']} cada día
                 """)
-            
-            # Instrucciones
-            st.markdown("---")
-            st.success("""
-            📋 **¡Registro completado exitosamente!**
-            
-            Tu visitante peatonal ya aparece en el sistema del guardia. 
-            Solo necesita llegar a la entrada peatonal e identificarse.
-            """)
+                
+            else:
+                # CONFIRMACIÓN VISITANTE ÚNICO (original)
+                st.subheader("✅ Visitante Peatonal Registrado")
+                
+                col1, col2 = st.columns([1, 1])
+                
+                with col1:
+                    st.markdown("**📋 Información del Registro:**")
+                    st.write(f"**Visitante:** {peatonal_data['visitante']}")
+                    if peatonal_data.get('telefono'):
+                        st.write(f"**Teléfono:** {peatonal_data['telefono']}")
+                    st.write(f"**Autorizado por:** {peatonal_data['colono']}")
+                    st.write(f"**Fecha:** {peatonal_data['fecha']}")
+                    st.write(f"**Horario:** {peatonal_data['horario']}")
+                    if peatonal_data.get('observaciones'):
+                        st.write(f"**Observaciones:** {peatonal_data['observaciones']}")
+                
+                with col2:
+                    st.markdown("**🚶 Acceso Peatonal**")
+                    st.info("""
+                    ✅ **El visitante ya está autorizado**
+                    
+                    No necesita QR, solo debe:
+                    1. 🚶 Llegar a la entrada peatonal
+                    2. 🗣️ Identificarse con el guardia
+                    3. ✅ El guardia confirmará su autorización
+                    4. 🚪 Acceso permitido en horario indicado
+                    """)
+                
+                # Instrucciones originales
+                st.markdown("---")
+                st.success("""
+                📋 **¡Registro completado exitosamente!**
+                
+                Tu visitante peatonal ya aparece en el sistema del guardia. 
+                Solo necesita llegar a la entrada peatonal e identificarse.
+                """)
             
             # Botón para registrar otro visitante
             if st.button("👥 Registrar Otro Visitante Peatonal", key="new_peatonal_btn"):
