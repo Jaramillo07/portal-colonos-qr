@@ -441,18 +441,30 @@ def vehicular_qr_generator():
         col1, col2 = st.columns(2)
         
         with col1:
-            hora_inicio = st.time_input(
+            hora_inicio_str = st.selectbox(
                 "🕕 Hora de inicio:",
-                value=time(18, 0),  # 6:00 PM por defecto
+                options=[
+                    "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+                    "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+                    "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
+                ],
+                index=12,  # 18:00 por defecto
                 key="vehicle_start_time"
             )
+            hora_inicio = time(int(hora_inicio_str.split(':')[0]), int(hora_inicio_str.split(':')[1]))
         
         with col2:
-            hora_fin = st.time_input(
+            hora_fin_str = st.selectbox(
                 "🕙 Hora de fin:",
-                value=time(22, 0),  # 10:00 PM por defecto
+                options=[
+                    "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
+                    "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
+                    "19:00", "20:00", "21:00", "22:00", "23:00"
+                ],
+                index=16,  # 22:00 por defecto
                 key="vehicle_end_time"
             )
+            hora_fin = time(int(hora_fin_str.split(':')[0]), int(hora_fin_str.split(':')[1]))
         
         # Botón generar
         col1, col2, col3 = st.columns([1, 1, 1])
@@ -575,18 +587,30 @@ def peatonal_registration():
         col1, col2 = st.columns(2)
         
         with col1:
-            hora_inicio = st.time_input(
+            hora_inicio_str = st.selectbox(
                 "🕕 Hora de inicio:",
-                value=time(9, 0),  # 9:00 AM por defecto
+                options=[
+                    "06:00", "07:00", "08:00", "09:00", "10:00", "11:00",
+                    "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
+                    "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
+                ],
+                index=3,  # 09:00 por defecto
                 key="peatonal_start_time"
             )
+            hora_inicio = time(int(hora_inicio_str.split(':')[0]), int(hora_inicio_str.split(':')[1]))
         
         with col2:
-            hora_fin = st.time_input(
+            hora_fin_str = st.selectbox(
                 "🕙 Hora de fin:",
-                value=time(18, 0),  # 6:00 PM por defecto
+                options=[
+                    "07:00", "08:00", "09:00", "10:00", "11:00", "12:00",
+                    "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
+                    "19:00", "20:00", "21:00", "22:00", "23:00"
+                ],
+                index=11,  # 18:00 por defecto
                 key="peatonal_end_time"
             )
+            hora_fin = time(int(hora_fin_str.split(':')[0]), int(hora_fin_str.split(':')[1]))
         
         # Observaciones
         observaciones = st.text_area(
