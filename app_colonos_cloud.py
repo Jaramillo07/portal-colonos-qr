@@ -347,7 +347,7 @@ def login_form():
         
         with col2:
             codigo_qr = st.text_input(
-                "🔑 Código QR Personal:",
+                "🔑 Password:",
                 type="password",
                 placeholder="Ej: jaramillo203",
                 key="login_codigo"
@@ -383,7 +383,7 @@ def login_form():
             st.write("""
             **Para acceder necesitas:**
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
-            - 🔑 **Contraseña**: Tu código QR personal (mismo que usas en el acceso físico)
+            - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
@@ -427,16 +427,24 @@ def vehicular_qr_generator():
         col1, col2 = st.columns(2)
         
         with col1:
+            # Obtener fecha actual y asegurar que funcione correctamente
+            hoy = date.today()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
-                value=date.today(),
-                min_value=date.today(),
-                max_value=date.today() + timedelta(days=30),
+                value=hoy,
+                min_value=hoy,
+                max_value=hoy + timedelta(days=60),  # 2 meses
+                help="Selecciona la fecha de la visita vehicular",
                 key="vehicle_visit_date"
             )
         
         with col2:
             st.markdown("⏰ **Horario disponible: 6:00 AM - 11:00 PM**")
+            st.info("📅 Puedes programar hasta 60 días adelante")
+            # Debug fecha actual
+            hoy_debug = date.today()
+            st.caption(f"🗓️ Hoy es: {hoy_debug.strftime('%d/%m/%Y')}")
+            st.info("📅 Puedes programar hasta 30 días adelante")
         
         col1, col2 = st.columns(2)
         
@@ -573,11 +581,14 @@ def peatonal_registration():
         col1, col2 = st.columns(2)
         
         with col1:
+            # Obtener fecha actual y asegurar que funcione correctamente
+            hoy = date.today()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
-                value=date.today(),
-                min_value=date.today(),
-                max_value=date.today() + timedelta(days=7),  # Máximo 1 semana
+                value=hoy,
+                min_value=hoy,
+                max_value=hoy + timedelta(days=30),  # 1 mes
+                help="Selecciona la fecha de la visita peatonal",
                 key="peatonal_visit_date"
             )
         
