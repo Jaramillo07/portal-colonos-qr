@@ -51,130 +51,109 @@ def get_google_credentials():
         logger.error(f"Error obteniendo credenciales: {e}")
         return None
 
-# ============== SISTEMA DE SESIÓN ULTRA-SIMPLE PARA PWA ==============
+# ============== SISTEMA ESPECÍFICO PARA PWA ==============
 
-def create_device_session(colono_name: str, colono_code: str):
-    """Crea una sesión de dispositivo simple y efectiva"""
+def create_pwa_token(colono_name: str, colono_code: str) -> str:
+    """Crea un token permanente para PWA"""
     try:
-        # Crear timestamp de expiración
         expiry = datetime.now() + timedelta(days=CONFIG['SESSION_DURATION_DAYS'])
+        expiry_str = expiry.strftime('%Y%m%d%H%M%S')
         
-        # Guardar en session_state (se mantiene mientras no se cierre completamente la app)
-        st.session_state.device_authenticated = True
-        st.session_state.device_user_name = colono_name
-        st.session_state.device_user_code = colono_code
-        st.session_state.device_login_time = datetime.now().isoformat()
-        st.session_state.device_expiry_time = expiry.isoformat()
+        # Crear datos del token
+        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
         
-        # Crear un hash único del dispositivo/navegador
-        import hashlib
-        user_agent = st.context.headers.get("user-agent", "unknown")
-        device_hash = hashlib.md5(f"{colono_name}{user_agent}{CONFIG['SECRET_KEY']}".encode()).hexdigest()
-        st.session_state.device_hash = device_hash
+        # Crear firma HMAC
+        signature = hmac.new(
+            CONFIG['SECRET_KEY'].encode(),
+            token_data.encode(),
+            hashlib.sha256
+        ).hexdigest()
         
-        # Crear URL auto-login para marcador
-        auto_login_data = f"{colono_name}|{colono_code}|{expiry.strftime('%Y%m%d%H%M%S')}"
-        signature = hmac.new(CONFIG['SECRET_KEY'].encode(), auto_login_data.encode(), hashlib.sha256).hexdigest()
-        auto_token = base64.urlsafe_b64encode(f"{auto_login_data}|{signature}".encode()).decode()
+        # Combinar y codificar
+        full_token = f"{token_data}|{signature}"
+        token_encoded = base64.urlsafe_b64encode(full_token.encode()).decode()
         
-        # Almacenar el token para mostrar al usuario
-        st.session_state.auto_login_url = f"?auto={auto_token}"
-        
-        logger.info(f"Sesión de dispositivo creada para {colono_name}")
-        return True
+        logger.info(f"Token PWA creado para {colono_name}")
+        return token_encoded
         
     except Exception as e:
-        logger.error(f"Error creando sesión de dispositivo: {e}")
-        return False
+        logger.error(f"Error creando token PWA: {e}")
+        return ""
 
-def check_device_session():
-    """Verifica si hay una sesión de dispositivo válida"""
+def validate_pwa_token(token: str) -> tuple:
+    """Valida token PWA y retorna (valid, colono_name, colono_code)"""
     try:
-        # Verificar sesión normal en session_state
-        if st.session_state.get('device_authenticated', False):
-            expiry_str = st.session_state.get('device_expiry_time')
-            if expiry_str:
-                expiry = datetime.fromisoformat(expiry_str)
-                if datetime.now() < expiry:
-                    # Sesión válida
-                    st.session_state.authenticated = True
-                    st.session_state.colono_name = st.session_state.get('device_user_name')
-                    st.session_state.colono_code = st.session_state.get('device_user_code')
-                    return True
-                else:
-                    # Sesión expirada
-                    clear_device_session()
+        if not token:
+            return False, "", ""
         
-        # Verificar auto-login por URL
-        query_params = st.query_params
-        if 'auto' in query_params:
-            auto_token = query_params['auto']
-            if validate_auto_token(auto_token):
-                return True
+        # Decodificar
+        try:
+            full_token = base64.urlsafe_b64decode(token).decode()
+        except:
+            return False, "", ""
         
-        return False
-        
-    except Exception as e:
-        logger.error(f"Error verificando sesión de dispositivo: {e}")
-        return False
-
-def validate_auto_token(token: str) -> bool:
-    """Valida token de auto-login desde URL"""
-    try:
-        decoded = base64.urlsafe_b64decode(token).decode()
-        parts = decoded.split('|')
-        
+        # Dividir partes
+        parts = full_token.split('|')
         if len(parts) != 4:
-            return False
-            
+            return False, "", ""
+        
         colono_name, colono_code, expiry_str, signature = parts
         
         # Verificar firma
-        auto_login_data = f"{colono_name}|{colono_code}|{expiry_str}"
-        expected_signature = hmac.new(CONFIG['SECRET_KEY'].encode(), auto_login_data.encode(), hashlib.sha256).hexdigest()
+        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
+        expected_signature = hmac.new(
+            CONFIG['SECRET_KEY'].encode(),
+            token_data.encode(),
+            hashlib.sha256
+        ).hexdigest()
         
         if not hmac.compare_digest(signature, expected_signature):
-            return False
+            return False, "", ""
         
         # Verificar expiración
-        expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
-        if datetime.now() > expiry:
-            return False
+        try:
+            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
+            if datetime.now() > expiry:
+                return False, "", ""
+        except:
+            return False, "", ""
         
-        # Auto-login exitoso
-        st.session_state.authenticated = True
-        st.session_state.colono_name = colono_name
-        st.session_state.colono_code = colono_code
-        create_device_session(colono_name, colono_code)
-        
-        # Limpiar URL
-        del st.query_params['auto']
-        
-        logger.info(f"Auto-login exitoso para {colono_name}")
-        return True
+        return True, colono_name, colono_code
         
     except Exception as e:
-        logger.error(f"Error validando auto-token: {e}")
-        return False
+        logger.error(f"Error validando token PWA: {e}")
+        return False, "", ""
 
-def clear_device_session():
-    """Limpia la sesión del dispositivo"""
+def check_pwa_auto_login():
+    """Verifica auto-login desde URL para PWA"""
     try:
-        keys_to_clear = [
-            'device_authenticated', 'device_user_name', 'device_user_code', 
-            'device_login_time', 'device_expiry_time', 'device_hash',
-            'authenticated', 'colono_name', 'colono_code', 'auto_login_url',
-            'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data'
-        ]
+        # Verificar parámetros de URL
+        query_params = st.query_params
         
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
+        if 'pwa' in query_params:
+            token = query_params['pwa']
+            valid, colono_name, colono_code = validate_pwa_token(token)
+            
+            if valid:
+                # Auto-login exitoso
+                st.session_state.authenticated = True
+                st.session_state.colono_name = colono_name
+                st.session_state.colono_code = colono_code
+                st.session_state.pwa_login = True
+                
+                logger.info(f"PWA auto-login exitoso para {colono_name}")
+                return True
+            else:
+                # Token inválido
+                st.error("🔒 Enlace de acceso expirado o inválido")
+                if 'pwa' in st.query_params:
+                    del st.query_params['pwa']
         
-        logger.info("Sesión de dispositivo limpiada")
+        return False
         
     except Exception as e:
-        logger.error(f"Error limpiando sesión: {e}")
+        logger.error(f"Error en PWA auto-login: {e}")
+        return False
 
 class GoogleSheetsManager:
     """Maneja la conexión y operaciones con Google Sheets"""
@@ -427,8 +406,12 @@ class AuthManager:
             return ""
 
 def check_authenticated():
-    """Verifica si el usuario está autenticado"""
-    return check_device_session()
+    """Verifica si el usuario está autenticado (incluye PWA auto-login)"""
+    # Primero verificar auto-login PWA
+    if not st.session_state.get('authenticated', False):
+        check_pwa_auto_login()
+    
+    return st.session_state.get('authenticated', False)
 
 def get_current_colono():
     """Obtiene el nombre del colono autenticado"""
@@ -446,9 +429,9 @@ def get_managers():
     return sheets_manager, cache_manager, auth_manager
 
 def login_form():
-    """Formulario de login CON SISTEMA SIMPLE Y EFECTIVO"""
+    """Formulario de login OPTIMIZADO PARA PWA"""
     st.title("🏠 Portal Colonos - Generador QR Visitas")
-    st.success("✅ Sesión inteligente de 30 días - ¡Tu celular te recordará!")
+    st.success("✅ Optimizado para apps del menú de inicio (PWA)")
     st.markdown("---")
     
     sheets_manager, cache_manager, auth_manager = get_managers()
@@ -494,14 +477,32 @@ def login_form():
                         st.session_state.colono_name = nombre_colono
                         st.session_state.colono_code = colono_code
                         
-                        # Crear sesión de dispositivo
-                        device_session_created = create_device_session(nombre_colono, colono_code)
-                        
                         st.success(f"✅ {message}")
-                        st.success("📱 ¡Tu celular recordará esta sesión por 30 días!")
+                        
+                        # Generar enlace PWA personalizado
+                        pwa_token = create_pwa_token(nombre_colono, colono_code)
+                        if pwa_token:
+                            # Construir URL completa (necesitamos hacer esto manualmente)
+                            pwa_url = f"?pwa={pwa_token}"
+                            
+                            st.success("🔗 ¡Enlace personalizado creado!")
+                            st.info("📱 **Para evitar hacer login cada vez en tu PWA:**")
+                            
+                            # Mostrar el enlace completo
+                            st.code(f"https://tu-app-url.streamlit.app{pwa_url}", language=None)
+                            
+                            st.markdown("""
+                            **📋 Cómo usarlo:**
+                            1. 📱 **Copia** el enlace de arriba
+                            2. 🌐 **Ábrelo en tu navegador** (Safari/Chrome)
+                            3. 🏠 **Vuelve a agregar al inicio** desde ese enlace
+                            4. ✅ **¡Tu nueva PWA ya no pedirá login!**
+                            
+                            *(Reemplaza la app actual con esta nueva versión)*
+                            """)
                         
                         import time
-                        time.sleep(2)
+                        time.sleep(3)
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
@@ -513,16 +514,15 @@ def login_form():
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
             - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
-            **¡Sesión inteligente!**
-            - 📱 **Tu celular recordará** automáticamente tu sesión
-            - 🔄 **30 días completos** sin necesidad de volver a loggearte
-            - ✅ **Funciona en apps** del menú de inicio del celular
-            - 🚪 **Solo usa "Cerrar Sesión" si compartes el celular**
+            **Para PWA (apps del menú de inicio):**
+            - 🔗 **Usa el enlace personalizado** que aparece después del login
+            - 📱 **Agrega ESE enlace** al menú de inicio (no el original)
+            - ✅ **30 días sin login** en tu PWA personalizada
             
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
             - Asegúrate de usar tu código QR personal correcto
-            - Contacta a administración si persisten los problemas
+            - Para PWA, usa el enlace personalizado que te damos
             """)
 
 def vehicular_qr_generator():
@@ -877,7 +877,10 @@ def main_app():
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
-        st.caption("📱 Sesión inteligente activa (30 días)")
+        if st.session_state.get('pwa_login', False):
+            st.caption("📱 PWA con auto-login activado")
+        else:
+            st.caption("🔐 Sesión normal activa")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -885,25 +888,45 @@ def main_app():
             st.success("Datos actualizados")
     
     with col3:
-        # Mostrar días restantes
-        device_login_time = st.session_state.get('device_login_time')
-        if device_login_time:
-            try:
-                login_datetime = datetime.fromisoformat(device_login_time)
-                days_remaining = 30 - (datetime.now() - login_datetime).days
-                if days_remaining > 0:
-                    st.caption(f"⏰ {days_remaining} días restantes")
-                else:
-                    st.caption("⏰ Sesión activa")
-            except:
-                st.caption("⏰ Sesión activa")
+        if st.button("🏠 Mi PWA", key="get_pwa_link"):
+            colono_name = get_current_colono()
+            colono_code = get_current_colono_code()
+            
+            if colono_name and colono_code:
+                pwa_token = create_pwa_token(colono_name, colono_code)
+                if pwa_token:
+                    pwa_url = f"?pwa={pwa_token}"
+                    
+                    st.session_state.show_pwa_link = True
+                    st.session_state.pwa_link = f"https://tu-app-url.streamlit.app{pwa_url}"
     
     with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
-            clear_device_session()
+            # Limpiar sesión
+            for key in ['authenticated', 'colono_name', 'colono_code', 'pwa_login', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data', 'show_pwa_link', 'pwa_link']:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.success("🔓 Sesión cerrada exitosamente")
             import time
             time.sleep(1)
+            st.rerun()
+    
+    # Mostrar enlace PWA si se solicitó
+    if st.session_state.get('show_pwa_link', False):
+        st.markdown("---")
+        st.success("🔗 **Tu enlace PWA personalizado:**")
+        st.code(st.session_state.get('pwa_link', ''), language=None)
+        st.info("""
+        📱 **Instrucciones para usar tu PWA personalizada:**
+        1. **Copia** el enlace de arriba
+        2. **Ábrelo en tu navegador** móvil
+        3. **Agrega al inicio** desde ese enlace (reemplaza la app actual)
+        4. **¡Ya no necesitarás hacer login por 30 días!**
+        """)
+        
+        if st.button("✅ Entendido", key="close_pwa_info"):
+            del st.session_state['show_pwa_link']
+            del st.session_state['pwa_link']
             st.rerun()
     
     st.markdown("---")
@@ -1028,7 +1051,7 @@ def main_app():
                 st.rerun()
 
 def main():
-    """Función principal con sistema de sesión ultra-simple"""
+    """Función principal OPTIMIZADA PARA PWA"""
     st.set_page_config(
         page_title="Portal Colonos - QR Visitas",
         page_icon="🏠",
