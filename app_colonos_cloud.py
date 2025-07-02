@@ -13,29 +13,7 @@ import logging
 import hashlib
 import hmac
 import base64
-
-# Importar cookies con fallback mejorado
-try:
-    import streamlit_cookies_manager as cookies_manager
-    COOKIES_AVAILABLE = True
-except ImportError:
-    COOKIES_AVAILABLE = False
-
-# Función para verificar si las cookies realmente funcionan
-def test_cookies():
-    if not COOKIES_AVAILABLE:
-        return False
-    try:
-        cookies = cookies_manager.CookieManager()
-        # Intentar escribir y leer una cookie de prueba
-        cookies['test_cookie'] = 'test_value'
-        cookies.save()
-        test_value = cookies.get('test_cookie')
-        return test_value == 'test_value'
-    except:
-        return False
-
-COOKIES_WORKING = test_cookies() if COOKIES_AVAILABLE else False
+import urllib.parse
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -74,44 +52,51 @@ def get_google_credentials():
         logger.error(f"Error obteniendo credenciales: {e}")
         return None
 
-# ============== FUNCIONES DE SESIÓN PERSISTENTE ==============
+# ============== SISTEMA DE SESIÓN PARA PWA MÓVILES ==============
 
-def create_session_token(colono_name: str, colono_code: str) -> str:
-    """Crea un token seguro para la sesión"""
+def create_auto_login_token(colono_name: str, colono_code: str) -> str:
+    """Crea un token de auto-login para PWA móviles"""
     try:
         expiry = datetime.now() + timedelta(days=CONFIG['SESSION_DURATION_DAYS'])
         expiry_str = expiry.strftime('%Y%m%d%H%M%S')
         
+        # Crear datos del token
         token_data = f"{colono_name}|{colono_code}|{expiry_str}"
         
+        # Crear firma HMAC
         signature = hmac.new(
             CONFIG['SECRET_KEY'].encode(),
             token_data.encode(),
             hashlib.sha256
         ).hexdigest()
         
+        # Combinar datos y firma
         full_token = f"{token_data}|{signature}"
-        token_bytes = base64.b64encode(full_token.encode()).decode()
         
-        logger.info(f"Token creado para {colono_name}, expira: {expiry_str}")
+        # Codificar en base64 y hacer URL-safe
+        token_bytes = base64.urlsafe_b64encode(full_token.encode()).decode()
+        
+        logger.info(f"Token de auto-login creado para {colono_name}")
         return token_bytes
         
     except Exception as e:
-        logger.error(f"Error creando token: {e}")
+        logger.error(f"Error creando token de auto-login: {e}")
         return ""
 
-def validate_session_token(token: str) -> tuple:
-    """Valida un token de sesión y retorna (valid, colono_name, colono_code)"""
+def validate_auto_login_token(token: str) -> tuple:
+    """Valida un token de auto-login"""
     try:
         if not token:
             return False, "", ""
         
+        # Decodificar base64
         try:
-            full_token = base64.b64decode(token).decode()
+            full_token = base64.urlsafe_b64decode(token).decode()
         except:
             logger.warning("Token inválido: no se puede decodificar")
             return False, "", ""
         
+        # Dividir partes del token
         parts = full_token.split('|')
         if len(parts) != 4:
             logger.warning("Token inválido: formato incorrecto")
@@ -119,6 +104,7 @@ def validate_session_token(token: str) -> tuple:
         
         colono_name, colono_code, expiry_str, signature = parts
         
+        # Verificar firma
         token_data = f"{colono_name}|{colono_code}|{expiry_str}"
         expected_signature = hmac.new(
             CONFIG['SECRET_KEY'].encode(),
@@ -130,6 +116,7 @@ def validate_session_token(token: str) -> tuple:
             logger.warning("Token inválido: firma incorrecta")
             return False, "", ""
         
+        # Verificar expiración
         try:
             expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
             if datetime.now() > expiry:
@@ -146,131 +133,51 @@ def validate_session_token(token: str) -> tuple:
         logger.error(f"Error validando token: {e}")
         return False, "", ""
 
-def save_session(colono_name: str, colono_code: str):
-    """Guarda la sesión en cookies y session_state con fallback"""
+def check_auto_login():
+    """Verifica si hay un token de auto-login en la URL"""
     try:
-        # Siempre guardar en session_state
-        st.session_state.authenticated = True
-        st.session_state.colono_name = colono_name
-        st.session_state.colono_code = colono_code
-        st.session_state.session_timestamp = datetime.now().isoformat()
+        # Obtener parámetros de la URL
+        query_params = st.experimental_get_query_params()
         
-        # Intentar guardar en cookies si están disponibles
-        if COOKIES_AVAILABLE and COOKIES_WORKING:
-            try:
-                cookies = cookies_manager.CookieManager()
-                token = create_session_token(colono_name, colono_code)
-                
-                if token:
-                    cookies['portal_colonos_session'] = token
-                    cookies.save()
-                    logger.info(f"Sesión guardada en cookies para {colono_name}")
-                    st.session_state.cookies_saved = True
-                    return True
-            except Exception as e:
-                logger.error(f"Error guardando en cookies: {e}")
-                st.session_state.cookies_saved = False
-        
-        # Fallback: guardar token en session_state como backup
-        backup_token = create_session_token(colono_name, colono_code)
-        st.session_state.backup_token = backup_token
-        st.session_state.cookies_saved = False
-        logger.info(f"Sesión guardada en session_state para {colono_name}")
-        return True
+        if 'auth' in query_params:
+            token = query_params['auth'][0]
+            valid, colono_name, colono_code = validate_auto_login_token(token)
             
-    except Exception as e:
-        logger.error(f"Error guardando sesión: {e}")
-        return False
-
-def load_session() -> bool:
-    """Carga la sesión desde cookies o session_state con debugging"""
-    try:
-        # Si ya está autenticado en session_state, verificar si es válido
-        if st.session_state.get('authenticated', False):
-            # Verificar si la sesión del session_state es reciente (menos de 30 días)
-            session_timestamp = st.session_state.get('session_timestamp')
-            if session_timestamp:
-                try:
-                    session_time = datetime.fromisoformat(session_timestamp)
-                    if datetime.now() - session_time < timedelta(days=30):
-                        return True  # Sesión válida en session_state
-                    else:
-                        # Sesión expirada, limpiar
-                        st.session_state.authenticated = False
-                except:
-                    pass
-        
-        # Intentar cargar desde cookies
-        if COOKIES_AVAILABLE and COOKIES_WORKING:
-            try:
-                cookies = cookies_manager.CookieManager()
-                token = cookies.get('portal_colonos_session')
-                
-                if token:
-                    valid, colono_name, colono_code = validate_session_token(token)
-                    
-                    if valid:
-                        st.session_state.authenticated = True
-                        st.session_state.colono_name = colono_name
-                        st.session_state.colono_code = colono_code
-                        st.session_state.session_timestamp = datetime.now().isoformat()
-                        st.session_state.cookies_saved = True
-                        logger.info(f"Sesión restaurada desde cookies para {colono_name}")
-                        return True
-                    else:
-                        # Token inválido, limpiar cookie
-                        cookies['portal_colonos_session'] = ""
-                        cookies.save()
-                        logger.info("Token inválido removido de cookies")
-            except Exception as e:
-                logger.error(f"Error cargando desde cookies: {e}")
-        
-        # Fallback: intentar cargar desde backup en session_state
-        backup_token = st.session_state.get('backup_token')
-        if backup_token:
-            valid, colono_name, colono_code = validate_session_token(backup_token)
             if valid:
+                # Auto-login exitoso
                 st.session_state.authenticated = True
                 st.session_state.colono_name = colono_name
                 st.session_state.colono_code = colono_code
-                st.session_state.session_timestamp = datetime.now().isoformat()
-                logger.info(f"Sesión restaurada desde backup para {colono_name}")
+                st.session_state.auto_login = True
+                
+                # Limpiar URL para que no quede el token visible
+                st.experimental_set_query_params()
+                
+                logger.info(f"Auto-login exitoso para {colono_name}")
                 return True
             else:
-                # Backup expirado, limpiar
-                if 'backup_token' in st.session_state:
-                    del st.session_state['backup_token']
-        
+                # Token inválido, limpiar URL
+                st.experimental_set_query_params()
+                
         return False
         
     except Exception as e:
-        logger.error(f"Error cargando sesión: {e}")
+        logger.error(f"Error en auto-login: {e}")
         return False
 
-def clear_session():
-    """Limpia la sesión de cookies y session_state completamente"""
+def generate_device_link(colono_name: str, colono_code: str) -> str:
+    """Genera un enlace especial para el dispositivo"""
     try:
-        # Limpiar session_state
-        keys_to_clear = ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 
-                        'peatonal_registered', 'peatonal_data', 'session_timestamp', 'backup_token', 'cookies_saved']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                del st.session_state[key]
-        
-        # Limpiar cookies si están disponibles
-        if COOKIES_AVAILABLE and COOKIES_WORKING:
-            try:
-                cookies = cookies_manager.CookieManager()
-                cookies['portal_colonos_session'] = ""
-                cookies.save()
-                logger.info("Cookies limpiadas")
-            except Exception as e:
-                logger.error(f"Error limpiando cookies: {e}")
-        
-        logger.info("Sesión limpiada completamente")
-        
+        token = create_auto_login_token(colono_name, colono_code)
+        if token:
+            # Obtener URL base
+            base_url = "https://tu-app-girasoles.streamlit.app"  # CAMBIAR POR TU URL
+            device_url = f"{base_url}?auth={token}"
+            return device_url
+        return ""
     except Exception as e:
-        logger.error(f"Error limpiando sesión: {e}")
+        logger.error(f"Error generando enlace de dispositivo: {e}")
+        return ""
 
 class GoogleSheetsManager:
     """Maneja la conexión y operaciones con Google Sheets"""
@@ -523,9 +430,10 @@ class AuthManager:
             return ""
 
 def check_authenticated():
-    """Verifica si el usuario está autenticado (session_state o cookies)"""
+    """Verifica si el usuario está autenticado"""
+    # Primero verificar auto-login
     if not st.session_state.get('authenticated', False):
-        load_session()
+        check_auto_login()
     
     return st.session_state.get('authenticated', False)
 
@@ -545,9 +453,9 @@ def get_managers():
     return sheets_manager, cache_manager, auth_manager
 
 def login_form():
-    """Formulario de login para colonos CON SESIÓN PERSISTENTE"""
+    """Formulario de login para colonos CON SESIÓN PERSISTENTE PARA PWA"""
     st.title("🏠 Portal Colonos - Generador QR Visitas")
-    st.success("✅ Sesión persistente activada - Se mantendrá tu login por 30 días")
+    st.success("✅ Optimizado para apps móviles - Sesión persistente de 30 días")
     st.markdown("---")
     
     sheets_manager, cache_manager, auth_manager = get_managers()
@@ -588,22 +496,29 @@ def login_form():
                     if success:
                         colono_code = auth_manager.get_colono_code(nombre_colono)
                         
-                        session_saved = save_session(nombre_colono, colono_code)
+                        # Autenticar en session_state
+                        st.session_state.authenticated = True
+                        st.session_state.colono_name = nombre_colono
+                        st.session_state.colono_code = colono_code
                         
-                        # Mostrar mensaje según el tipo de guardado
-                        if st.session_state.get('cookies_saved', False):
-                            st.success(f"✅ {message} - Sesión guardada por 30 días (Cookies activas)")
-                        else:
-                            st.success(f"✅ {message} - Sesión guardada por 30 días (Modo compatibilidad)")
+                        st.success(f"✅ {message}")
                         
-                        # Debug info (opcional, puedes comentar esta línea si no quieres mostrarla)
-                        if st.session_state.get('cookies_saved', False):
-                            st.info("🔧 Cookies funcionando correctamente")
-                        else:
-                            st.info("🔧 Usando modo de compatibilidad (funciona igual de bien)")
+                        # Mostrar opción de enlace permanente
+                        device_link = generate_device_link(nombre_colono, colono_code)
+                        if device_link:
+                            st.success("🔗 **¡Importante para apps móviles!**")
+                            st.info("📱 Para mantener tu sesión activa por 30 días, guarda este enlace:")
+                            st.code(device_link, language=None)
+                            st.markdown("""
+                            **📋 Instrucciones:**
+                            1. 📱 **Copia** el enlace de arriba
+                            2. 🔖 **Guárdalo como marcador** en tu navegador
+                            3. 🏠 **Úsalo como acceso directo** desde tu pantalla de inicio
+                            4. ✅ **Ya no necesitarás loggearte** por 30 días
+                            """)
                         
                         import time
-                        time.sleep(2)
+                        time.sleep(3)
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
@@ -615,31 +530,16 @@ def login_form():
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
             - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
-            **Sesión persistente:**
-            - 🔄 Tu login se mantendrá activo por 30 días
-            - 🔒 Puedes cerrar y abrir el navegador sin perder la sesión
-            - 🚪 Usa "Cerrar Sesión" para terminar manualmente
+            **Para apps móviles:**
+            - 📱 **Guarda el enlace especial** que aparece después del login
+            - 🔖 **Agrega como marcador** para acceso rápido
+            - ✅ **30 días sin necesidad de loggearte** nuevamente
             
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
             - Asegúrate de usar tu código QR personal correcto
             - Contacta a administración si persisten los problemas
             """)
-            
-            # Diagnóstico técnico (expandible)
-            with st.expander("🔧 Diagnóstico Técnico (para soporte)"):
-                st.write("**Estado del sistema:**")
-                st.write(f"- Cookies disponibles: {'✅ Sí' if COOKIES_AVAILABLE else '❌ No'}")
-                st.write(f"- Cookies funcionando: {'✅ Sí' if COOKIES_WORKING else '❌ No'}")
-                st.write(f"- Navegador compatible: {'✅ Sí' if COOKIES_AVAILABLE and COOKIES_WORKING else '⚠️ Modo compatibilidad'}")
-                
-                if st.button("🔄 Probar Cookies", key="test_cookies_btn"):
-                    test_result = test_cookies()
-                    if test_result:
-                        st.success("✅ Cookies funcionan correctamente")
-                    else:
-                        st.warning("⚠️ Cookies no disponibles - usando modo compatibilidad")
-                        st.info("💡 El modo compatibilidad funciona igual de bien, solo que la sesión se reinicia si cierras completamente el navegador")
 
 def vehicular_qr_generator():
     """Generador de QR para visitantes vehiculares"""
@@ -985,7 +885,7 @@ def peatonal_registration():
                         logger.error(f"Error en registro peatonal: {e}")
 
 def main_app():
-    """Aplicación principal para colonos autenticados CON SESIÓN PERSISTENTE"""
+    """Aplicación principal para colonos autenticados"""
     sheets_manager, cache_manager, auth_manager = get_managers()
     
     col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
@@ -993,11 +893,10 @@ def main_app():
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
-        # Mostrar tipo de sesión
-        if st.session_state.get('cookies_saved', False):
-            st.caption("🔒 Sesión persistente activa (Cookies)")
+        if st.session_state.get('auto_login', False):
+            st.caption("🔒 Sesión automática activa (30 días)")
         else:
-            st.caption("🔒 Sesión persistente activa (Compatibilidad)")
+            st.caption("📱 Sesión de dispositivo activa")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -1005,45 +904,32 @@ def main_app():
             st.success("Datos actualizados")
     
     with col3:
-        try:
-            days_left = 0
-            
-            # Intentar obtener días desde cookies
-            if COOKIES_AVAILABLE and COOKIES_WORKING:
-                cookies = cookies_manager.CookieManager()
-                token = cookies.get('portal_colonos_session')
-                if token:
-                    valid, _, _ = validate_session_token(token)
-                    if valid:
-                        full_token = base64.b64decode(token).decode()
-                        parts = full_token.split('|')
-                        if len(parts) >= 3:
-                            expiry_str = parts[2]
-                            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
-                            days_left = (expiry - datetime.now()).days
-            
-            # Fallback: calcular desde session_timestamp
-            if days_left <= 0:
-                session_timestamp = st.session_state.get('session_timestamp')
-                if session_timestamp:
-                    session_time = datetime.fromisoformat(session_timestamp)
-                    expiry_time = session_time + timedelta(days=30)
-                    days_left = (expiry_time - datetime.now()).days
-            
-            if days_left > 0:
-                st.caption(f"⏰ Sesión: {days_left} días")
-            else:
-                st.caption("⏰ Sesión activa")
-                
-        except Exception as e:
-            st.caption("⏰ Sesión activa")
+        # Mostrar tiempo restante o enlace
+        if not st.session_state.get('auto_login', False):
+            if st.button("🔗 Enlace Permanente", key="get_permanent_link"):
+                device_link = generate_device_link(get_current_colono(), get_current_colono_code())
+                if device_link:
+                    st.session_state.show_permanent_link = device_link
     
     with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
-            clear_session()
+            # Limpiar sesión
+            for key in ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data', 'auto_login', 'show_permanent_link']:
+                if key in st.session_state:
+                    del st.session_state[key]
             st.success("🔓 Sesión cerrada exitosamente")
             import time
             time.sleep(1)
+            st.rerun()
+    
+    # Mostrar enlace permanente si se solicitó
+    if st.session_state.get('show_permanent_link'):
+        st.markdown("---")
+        st.success("🔗 **Enlace permanente para tu dispositivo:**")
+        st.code(st.session_state.show_permanent_link, language=None)
+        st.info("📱 **Guarda este enlace como marcador para acceso directo de 30 días**")
+        if st.button("✅ Entendido", key="close_link"):
+            del st.session_state['show_permanent_link']
             st.rerun()
     
     st.markdown("---")
@@ -1168,7 +1054,7 @@ def main_app():
                 st.rerun()
 
 def main():
-    """Función principal de la aplicación CON SESIÓN PERSISTENTE"""
+    """Función principal de la aplicación optimizada para PWA"""
     st.set_page_config(
         page_title="Portal Colonos - QR Visitas",
         page_icon="🏠",
@@ -1190,13 +1076,6 @@ def main():
         padding: 1rem;
         border-radius: 5px;
         border-left: 4px solid #4CAF50;
-    }
-    .session-indicator {
-        background: #e8f5e8;
-        padding: 0.5rem;
-        border-radius: 5px;
-        border-left: 3px solid #4CAF50;
-        font-size: 0.9em;
     }
     </style>
     """, unsafe_allow_html=True)
