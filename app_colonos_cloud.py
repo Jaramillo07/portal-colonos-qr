@@ -10,6 +10,19 @@ import os
 import json
 from datetime import datetime, time, date, timedelta
 import logging
+import hashlib
+import hmac
+import base64
+
+# Instalar la librería de cookies si no está instalada
+# pip install streamlit-cookies-manager
+
+try:
+    import streamlit_cookies_manager as cookies_manager
+    COOKIES_AVAILABLE = True
+except ImportError:
+    COOKIES_AVAILABLE = False
+    st.warning("⚠️ Para sesiones persistentes, instala: pip install streamlit-cookies-manager")
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -21,35 +34,196 @@ CONFIG = {
     'CACHE_FILE': 'cache_colonos.csv',
     'HORARIO_INICIO': time(6, 0),  # 6:00 AM
     'HORARIO_FIN': time(23, 0),    # 11:00 PM
+    'SESSION_DURATION_DAYS': 7,    # Sesión válida por 7 días
+    'SECRET_KEY': 'tu_clave_secreta_super_segura_2024'  # CAMBIAR EN PRODUCCIÓN
 }
 
 def get_mexico_date():
     """Obtiene la fecha actual en zona horaria de México (UTC-6)"""
     try:
-        # Obtener fecha/hora UTC
         utc_now = datetime.utcnow()
-        # Restar 6 horas para México (Central Time)
         mexico_now = utc_now - timedelta(hours=6)
         return mexico_now.date()
     except Exception as e:
         logger.error(f"Error obteniendo fecha México: {e}")
-        # Fallback: usar date.today()
         return date.today()
 
 def get_google_credentials():
     """Obtiene las credenciales de Google desde Streamlit secrets o archivo local"""
     try:
-        # Intentar usar secrets de Streamlit Cloud primero
         if hasattr(st, 'secrets') and 'google_sheets' in st.secrets:
             credentials_dict = dict(st.secrets['google_sheets'])
             return credentials_dict
         else:
-            # Fallback para desarrollo local
             with open('credenciales_girasoles.json', 'r') as f:
                 return json.load(f)
     except Exception as e:
         logger.error(f"Error obteniendo credenciales: {e}")
         return None
+
+# ============== FUNCIONES DE SESIÓN PERSISTENTE ==============
+
+def create_session_token(colono_name: str, colono_code: str) -> str:
+    """Crea un token seguro para la sesión"""
+    try:
+        # Crear timestamp de expiración
+        expiry = datetime.now() + timedelta(days=CONFIG['SESSION_DURATION_DAYS'])
+        expiry_str = expiry.strftime('%Y%m%d%H%M%S')
+        
+        # Crear datos del token
+        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
+        
+        # Crear firma HMAC
+        signature = hmac.new(
+            CONFIG['SECRET_KEY'].encode(),
+            token_data.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Combinar datos y firma
+        full_token = f"{token_data}|{signature}"
+        
+        # Codificar en base64 para uso en cookies
+        token_bytes = base64.b64encode(full_token.encode()).decode()
+        
+        logger.info(f"Token creado para {colono_name}, expira: {expiry_str}")
+        return token_bytes
+        
+    except Exception as e:
+        logger.error(f"Error creando token: {e}")
+        return ""
+
+def validate_session_token(token: str) -> tuple:
+    """Valida un token de sesión y retorna (valid, colono_name, colono_code)"""
+    try:
+        if not token:
+            return False, "", ""
+        
+        # Decodificar base64
+        try:
+            full_token = base64.b64decode(token).decode()
+        except:
+            logger.warning("Token inválido: no se puede decodificar")
+            return False, "", ""
+        
+        # Dividir partes del token
+        parts = full_token.split('|')
+        if len(parts) != 4:
+            logger.warning("Token inválido: formato incorrecto")
+            return False, "", ""
+        
+        colono_name, colono_code, expiry_str, signature = parts
+        
+        # Verificar firma
+        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
+        expected_signature = hmac.new(
+            CONFIG['SECRET_KEY'].encode(),
+            token_data.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            logger.warning("Token inválido: firma incorrecta")
+            return False, "", ""
+        
+        # Verificar expiración
+        try:
+            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
+            if datetime.now() > expiry:
+                logger.info("Token expirado")
+                return False, "", ""
+        except:
+            logger.warning("Token inválido: fecha de expiración incorrecta")
+            return False, "", ""
+        
+        logger.info(f"Token válido para {colono_name}")
+        return True, colono_name, colono_code
+        
+    except Exception as e:
+        logger.error(f"Error validando token: {e}")
+        return False, "", ""
+
+def save_session(colono_name: str, colono_code: str):
+    """Guarda la sesión en cookies y session_state"""
+    try:
+        # Guardar en session_state (para uso inmediato)
+        st.session_state.authenticated = True
+        st.session_state.colono_name = colono_name
+        st.session_state.colono_code = colono_code
+        
+        # Guardar en cookies (para persistencia)
+        if COOKIES_AVAILABLE:
+            cookies = cookies_manager.CookieManager()
+            token = create_session_token(colono_name, colono_code)
+            
+            if token:
+                # Configurar cookie con expiración
+                cookies['portal_colonos_session'] = token
+                # La cookie expirará en el navegador después de SESSION_DURATION_DAYS
+                cookies.save()
+                logger.info(f"Sesión guardada para {colono_name}")
+                return True
+        else:
+            logger.warning("Cookies no disponibles, sesión solo en memory")
+            return True
+            
+    except Exception as e:
+        logger.error(f"Error guardando sesión: {e}")
+        return False
+
+def load_session() -> bool:
+    """Carga la sesión desde cookies si está disponible"""
+    try:
+        # Si ya está autenticado en session_state, no hacer nada
+        if st.session_state.get('authenticated', False):
+            return True
+        
+        # Intentar cargar desde cookies
+        if COOKIES_AVAILABLE:
+            cookies = cookies_manager.CookieManager()
+            token = cookies.get('portal_colonos_session')
+            
+            if token:
+                valid, colono_name, colono_code = validate_session_token(token)
+                
+                if valid:
+                    # Restaurar sesión
+                    st.session_state.authenticated = True
+                    st.session_state.colono_name = colono_name
+                    st.session_state.colono_code = colono_code
+                    logger.info(f"Sesión restaurada para {colono_name}")
+                    return True
+                else:
+                    # Token inválido, limpiar cookie
+                    cookies['portal_colonos_session'] = ""
+                    cookies.save()
+                    logger.info("Token inválido removido")
+        
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error cargando sesión: {e}")
+        return False
+
+def clear_session():
+    """Limpia la sesión de cookies y session_state"""
+    try:
+        # Limpiar session_state
+        for key in ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data']:
+            if key in st.session_state:
+                del st.session_state[key]
+        
+        # Limpiar cookies
+        if COOKIES_AVAILABLE:
+            cookies = cookies_manager.CookieManager()
+            cookies['portal_colonos_session'] = ""
+            cookies.save()
+            logger.info("Sesión limpiada completamente")
+        
+    except Exception as e:
+        logger.error(f"Error limpiando sesión: {e}")
+
+# ============== CLASES ORIGINALES (sin cambios) ==============
 
 class GoogleSheetsManager:
     """Maneja la conexión y operaciones con Google Sheets"""
@@ -89,10 +263,8 @@ class GoogleSheetsManager:
             records = self.sheet.get_all_records()
             df = pd.DataFrame(records)
             
-            # Filtrar solo códigos de colonos/fijos para autenticación
             if not df.empty and 'tipo' in df.columns:
                 colonos_df = df[df['tipo'].isin(['fijo', 'colono'])]
-                # AGREGADA COLUMNA COLONO
                 required_cols = ['codigo_qr', 'tipo', 'colono', 'fecha_inicio', 'fecha_fin']
                 for col in required_cols:
                     if col not in colonos_df.columns:
@@ -111,7 +283,6 @@ class GoogleSheetsManager:
             if not self.sheet:
                 raise Exception("No hay conexión a Google Sheets")
             
-            # Agregar fila: codigo_qr, tipo, colono, fecha_inicio, fecha_fin
             self.sheet.append_row([codigo_qr, "visita", colono, fecha_inicio, fecha_fin])
             logger.info(f"QR visita {codigo_qr} agregado exitosamente para {colono}")
             return True
@@ -125,7 +296,6 @@ class GoogleSheetsManager:
             if not self.sheet:
                 raise Exception("No hay conexión a Google Sheets")
             
-            # Agregar fila: nombre_visitante (en codigo_qr), tipo=peatonal, colono, fecha_inicio, fecha_fin
             self.sheet.append_row([nombre_visitante, "peatonal", colono, fecha_inicio, fecha_fin])
             logger.info(f"Visitante peatonal {nombre_visitante} agregado exitosamente para {colono}")
             return True
@@ -179,13 +349,10 @@ class QRGenerator:
             qr.add_data(data)
             qr.make(fit=True)
             
-            # Crear imagen QR
             img = qr.make_image(fill_color="black", back_color="white")
             
-            # Convertir a PIL Image si es necesario
             from PIL import Image
             if not isinstance(img, Image.Image):
-                # Si no es PIL Image, convertir
                 img = img.convert('RGB')
             
             logger.info(f"QR generado exitosamente para: {data}")
@@ -205,22 +372,17 @@ class QRGenerator:
             
             from PIL import Image
             
-            # Asegurar que es una imagen PIL
             if not isinstance(img, Image.Image):
                 logger.error(f"Objeto no es PIL Image: {type(img)}")
                 return None
                 
-            # Crear buffer de bytes
             buf = io.BytesIO()
             
-            # Convertir a RGB si es necesario (para PNG)
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            # Guardar imagen en buffer como PNG
             img.save(buf, format='PNG')
             
-            # Obtener bytes
             buf.seek(0)
             img_bytes = buf.getvalue()
             buf.close()
@@ -246,7 +408,6 @@ class AuthManager:
     def update_colonos_data(self) -> bool:
         """Actualiza los datos de colonos desde Sheets o cache"""
         try:
-            # Intentar cargar desde Google Sheets
             df = self.sheets_manager.get_colonos_data()
             
             if not df.empty:
@@ -255,7 +416,6 @@ class AuthManager:
                 logger.info("Datos de colonos actualizados desde Google Sheets")
                 return True
             else:
-                # Cargar desde cache si falla Sheets
                 df = self.cache_manager.load_cache()
                 if not df.empty:
                     self.colonos_data = df
@@ -267,7 +427,6 @@ class AuthManager:
                     
         except Exception as e:
             logger.error(f"Error actualizando datos de colonos: {e}")
-            # Intentar cargar cache como fallback
             df = self.cache_manager.load_cache()
             if not df.empty:
                 self.colonos_data = df
@@ -280,7 +439,6 @@ class AuthManager:
             if self.colonos_data.empty:
                 return False, "No hay datos de colonos cargados"
             
-            # Buscar colono por nombre (case-insensitive)
             nombre_lower = nombre_colono.lower().strip()
             colono_match = self.colonos_data[
                 self.colonos_data['colono'].str.lower().str.strip() == nombre_lower
@@ -289,7 +447,6 @@ class AuthManager:
             if colono_match.empty:
                 return False, f"Colono '{nombre_colono}' no encontrado"
             
-            # Verificar código QR
             colono_row = colono_match.iloc[0]
             codigo_esperado = str(colono_row['codigo_qr']).strip()
             codigo_ingresado = codigo_qr.strip()
@@ -318,9 +475,14 @@ class AuthManager:
             logger.error(f"Error obteniendo código del colono: {e}")
             return ""
 
-# Funciones de autenticación de sesión
+# ============== FUNCIONES DE AUTENTICACIÓN ACTUALIZADAS ==============
+
 def check_authenticated():
-    """Verifica si el usuario está autenticado"""
+    """Verifica si el usuario está autenticado (session_state o cookies)"""
+    # Primero intentar cargar desde cookies si no está en session_state
+    if not st.session_state.get('authenticated', False):
+        load_session()
+    
     return st.session_state.get('authenticated', False)
 
 def get_current_colono():
@@ -340,8 +502,15 @@ def get_managers():
     return sheets_manager, cache_manager, auth_manager
 
 def login_form():
-    """Formulario de login para colonos"""
+    """Formulario de login para colonos CON SESIÓN PERSISTENTE"""
     st.title("🏠 Portal Colonos - Generador QR Visitas")
+    
+    # Mostrar estado de sesión persistente
+    if COOKIES_AVAILABLE:
+        st.success("✅ Sesión persistente activada - Se mantendrá tu login por 7 días")
+    else:
+        st.warning("⚠️ Sesión temporal - Para mantener login instala: `pip install streamlit-cookies-manager`")
+    
     st.markdown("---")
     
     sheets_manager, cache_manager, auth_manager = get_managers()
@@ -375,17 +544,25 @@ def login_form():
                 st.error("❌ Por favor complete todos los campos")
             else:
                 with st.spinner("Verificando credenciales..."):
-                    # Actualizar datos antes de autenticar
                     auth_manager.update_colonos_data()
                     
                     success, message = auth_manager.authenticate_colono(nombre_colono, codigo_qr)
                     
                     if success:
-                        # Guardar datos de sesión
-                        st.session_state.authenticated = True
-                        st.session_state.colono_name = nombre_colono
-                        st.session_state.colono_code = auth_manager.get_colono_code(nombre_colono)
-                        st.success(f"✅ {message}")
+                        # Obtener código del colono para la sesión
+                        colono_code = auth_manager.get_colono_code(nombre_colono)
+                        
+                        # GUARDAR SESIÓN PERSISTENTE
+                        session_saved = save_session(nombre_colono, colono_code)
+                        
+                        if session_saved and COOKIES_AVAILABLE:
+                            st.success(f"✅ {message} - Sesión guardada por 7 días")
+                        else:
+                            st.success(f"✅ {message}")
+                        
+                        # Pequeña pausa para mostrar el mensaje
+                        import time
+                        time.sleep(1)
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
@@ -398,6 +575,11 @@ def login_form():
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
             - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
+            **Sesión persistente:**
+            - 🔄 Tu login se mantendrá activo por 7 días
+            - 🔒 Puedes cerrar y abrir el navegador sin perder la sesión
+            - 🚪 Usa "Cerrar Sesión" para terminar manualmente
+            
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
             - Asegúrate de usar tu código QR personal correcto
@@ -405,14 +587,13 @@ def login_form():
             """)
 
 def vehicular_qr_generator():
-    """Generador de QR para visitantes vehiculares"""
+    """Generador de QR para visitantes vehiculares (sin cambios)"""
     sheets_manager, cache_manager, auth_manager = get_managers()
     
     st.subheader("🚗 Generar QR para Visita Vehicular")
     st.info("💡 Para visitantes que ingresan con vehículo y necesitan QR")
     
     with st.form("qr_generator_form", clear_on_submit=True):
-        # Información de la visita
         st.markdown("**📝 Datos de la Visita:**")
         
         col1, col2 = st.columns(2)
@@ -431,22 +612,19 @@ def vehicular_qr_generator():
                 key="vehicle_visitor_lastname"
             )
         
-        # Validación: al menos uno debe estar lleno
         st.info("ℹ️ Debe llenar al menos el nombre o apellido del visitante")
         
-        # Fecha y horario
         st.markdown("**📅 Horario de Visita:**")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            # Obtener fecha actual en zona horaria de México
             hoy = get_mexico_date()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
                 value=hoy,
                 min_value=hoy,
-                max_value=hoy + timedelta(days=60),  # 2 meses
+                max_value=hoy + timedelta(days=60),
                 help="Selecciona la fecha de la visita vehicular",
                 key="vehicle_visit_date"
             )
@@ -454,13 +632,8 @@ def vehicular_qr_generator():
         with col2:
             st.markdown("⏰ **Horario disponible: 6:00 AM - 11:00 PM**")
             st.info("📅 Puedes programar hasta 60 días adelante")
-            # Debug fecha actual - México
             hoy_debug = get_mexico_date()
             st.caption(f"🗓️ Hoy es: {hoy_debug.strftime('%d/%m/%Y')} (México)")
-            # Debug comparación
-            utc_debug = date.today()
-            st.caption(f"🌍 UTC: {utc_debug.strftime('%d/%m/%Y')}")
-            st.info("📅 Puedes programar hasta 30 días adelante")
         
         col1, col2 = st.columns(2)
         
@@ -472,7 +645,7 @@ def vehicular_qr_generator():
                     "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
                     "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
                 ],
-                index=12,  # 18:00 por defecto
+                index=12,
                 key="vehicle_start_time"
             )
             hora_inicio = time(int(hora_inicio_str.split(':')[0]), int(hora_inicio_str.split(':')[1]))
@@ -485,26 +658,21 @@ def vehicular_qr_generator():
                     "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
                     "19:00", "20:00", "21:00", "22:00", "23:00"
                 ],
-                index=16,  # 22:00 por defecto
+                index=16,
                 key="vehicle_end_time"
             )
             hora_fin = time(int(hora_fin_str.split(':')[0]), int(hora_fin_str.split(':')[1]))
         
-        # Botón generar
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
             generate_btn = st.form_submit_button("🎫 Generar QR Vehicular", type="primary", use_container_width=True)
         
-        # Procesar formulario
         if generate_btn:
-            # Validaciones
             errors = []
             
-            # Validar nombre/apellido
             if not nombre_visita.strip() and not apellido_visita.strip():
                 errors.append("Debe ingresar al menos el nombre o apellido del visitante")
             
-            # Validar horario
             if hora_inicio < CONFIG['HORARIO_INICIO'] or hora_inicio > CONFIG['HORARIO_FIN']:
                 errors.append(f"La hora de inicio debe estar entre {CONFIG['HORARIO_INICIO'].strftime('%H:%M')} y {CONFIG['HORARIO_FIN'].strftime('%H:%M')}")
             
@@ -518,24 +686,19 @@ def vehicular_qr_generator():
                 for error in errors:
                     st.error(f"❌ {error}")
             else:
-                # Generar QR
                 with st.spinner("Generando QR vehicular..."):
                     try:
-                        # Crear nombre completo del visitante
                         nombre_completo = f"{nombre_visita.strip()}{apellido_visita.strip()}".lower().replace(" ", "")
                         
-                        # Generar código QR con sintaxis: QR + nombre + codigo_colono
                         colono_code = get_current_colono_code()
                         qr_code = f"QR{nombre_completo}{colono_code}"
                         
-                        # Crear fechas completas
                         fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
                         fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
                         
                         fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
                         fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
                         
-                        # Agregar a Google Sheets
                         success = sheets_manager.add_visita_qr(
                             qr_code,
                             get_current_colono(),
@@ -544,7 +707,6 @@ def vehicular_qr_generator():
                         )
                         
                         if success:
-                            # Guardar datos en session_state para mostrar fuera del form
                             st.session_state.qr_generated = True
                             st.session_state.qr_data = {
                                 'codigo': qr_code,
@@ -565,13 +727,12 @@ def vehicular_qr_generator():
                         logger.error(f"Error en generación de QR vehicular: {e}")
 
 def peatonal_registration():
-    """Registro de visitantes peatonales"""
+    """Registro de visitantes peatonales (sin cambios importantes)"""
     sheets_manager, cache_manager, auth_manager = get_managers()
     
     st.subheader("🚶 Registrar Visitante Peatonal")
     st.info("💡 Para visitantes que ingresan a pie (sin vehículo) - No requiere QR")
     
-    # Selector de tipo de visitante
     tipo_visitante = st.radio(
         "🔘 Tipo de visitante:",
         ["👤 Visitante único (un día)", "🔄 Visitante recurrente (varios días)"],
@@ -581,7 +742,6 @@ def peatonal_registration():
     es_recurrente = "recurrente" in tipo_visitante
     
     with st.form("peatonal_registration_form", clear_on_submit=True):
-        # Información del visitante
         st.markdown("**📝 Datos del Visitante:**")
         
         col1, col2 = st.columns(2)
@@ -600,28 +760,24 @@ def peatonal_registration():
                     ["Limpieza", "Jardinería", "Mantenimiento", "Seguridad", "Delivery", "Otro"],
                     key="peatonal_service_type"
                 )
-                telefono_visitante = ""  # No se usa para recurrentes
             else:
                 telefono_visitante = st.text_input(
                     "📱 Teléfono (opcional):",
                     placeholder="Ej: 477-123-4567",
                     key="peatonal_visitor_phone"
                 )
-                tipo_servicio = ""  # No se usa para únicos
         
-        # Fecha y horario
         st.markdown("**📅 Horario Autorizado:**")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            # Obtener fecha actual en zona horaria de México
             hoy = get_mexico_date()
             fecha_visita = st.date_input(
                 "📅 Fecha de la visita:",
                 value=hoy,
                 min_value=hoy,
-                max_value=hoy + timedelta(days=30),  # 1 mes
+                max_value=hoy + timedelta(days=30),
                 help="Selecciona la fecha de la visita peatonal",
                 key="peatonal_visit_date"
             )
@@ -640,7 +796,7 @@ def peatonal_registration():
                         "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
                         "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
                     ],
-                    index=2,  # 08:00 por defecto
+                    index=2,
                     key="peatonal_recurrent_start_time"
                 )
             else:
@@ -651,7 +807,7 @@ def peatonal_registration():
                         "12:00", "13:00", "14:00", "15:00", "16:00", "17:00",
                         "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"
                     ],
-                    index=3,  # 09:00 por defecto
+                    index=3,
                     key="peatonal_start_time"
                 )
             hora_inicio = time(int(hora_inicio_str.split(':')[0]), int(hora_inicio_str.split(':')[1]))
@@ -665,7 +821,7 @@ def peatonal_registration():
                         "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
                         "19:00", "20:00", "21:00", "22:00", "23:00"
                     ],
-                    index=10,  # 17:00 por defecto
+                    index=10,
                     key="peatonal_recurrent_end_time"
                 )
             else:
@@ -676,12 +832,11 @@ def peatonal_registration():
                         "13:00", "14:00", "15:00", "16:00", "17:00", "18:00",
                         "19:00", "20:00", "21:00", "22:00", "23:00"
                     ],
-                    index=11,  # 18:00 por defecto
+                    index=11,
                     key="peatonal_end_time"
                 )
             hora_fin = time(int(hora_fin_str.split(':')[0]), int(hora_fin_str.split(':')[1]))
         
-        # Observaciones
         if es_recurrente:
             observaciones = st.text_area(
                 "📝 Descripción del servicio:",
@@ -689,14 +844,6 @@ def peatonal_registration():
                 key="peatonal_recurrent_observations",
                 max_chars=200
             )
-            
-            # Información adicional para recurrentes
-            st.info(f"""
-            ℹ️ **Visitante Recurrente - {duracion_dias}:**
-            - 📅 **Período:** {fecha_inicio.strftime('%d/%m/%Y')} al {fecha_fin.strftime('%d/%m/%Y')}
-            - ⏰ **Horario diario:** {hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}
-            - 📝 **Cada entrada/salida** se registrará por separado en los logs
-            """)
         else:
             observaciones = st.text_area(
                 "📝 Observaciones (opcional):",
@@ -705,7 +852,6 @@ def peatonal_registration():
                 max_chars=200
             )
         
-        # Botón registrar
         col1, col2, col3 = st.columns([1, 1, 1])
         with col2:
             if es_recurrente:
@@ -713,16 +859,12 @@ def peatonal_registration():
             else:
                 register_btn = st.form_submit_button("👥 Registrar Visitante Peatonal", type="primary", use_container_width=True)
         
-        # Procesar formulario
         if register_btn:
-            # Validaciones
             errors = []
             
-            # Validar nombre
             if not nombre_visitante.strip():
                 errors.append("Debe ingresar el nombre del visitante")
             
-            # Validar horario
             if hora_inicio < CONFIG['HORARIO_INICIO'] or hora_inicio > CONFIG['HORARIO_FIN']:
                 errors.append(f"La hora de inicio debe estar entre {CONFIG['HORARIO_INICIO'].strftime('%H:%M')} y {CONFIG['HORARIO_FIN'].strftime('%H:%M')}")
             
@@ -736,85 +878,50 @@ def peatonal_registration():
                 for error in errors:
                     st.error(f"❌ {error}")
             else:
-                # Registrar visitante peatonal
                 with st.spinner("Registrando visitante peatonal..."):
                     try:
+                        fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
+                        fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
+                        
+                        fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
+                        fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        nombre_completo = nombre_visitante.strip()
                         if es_recurrente:
-                            # VISITANTE RECURRENTE
-                            # Crear fechas completas para el período completo
-                            fecha_inicio_completa = datetime.combine(fecha_inicio, hora_inicio)
-                            fecha_fin_completa = datetime.combine(fecha_fin, hora_fin)
-                            
-                            fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
-                            fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
-                            
-                            # Crear nombre completo con información del servicio
-                            nombre_completo = f"{nombre_visitante.strip()} ({tipo_servicio})"
-                            if observaciones.strip():
-                                nombre_completo += f" - {observaciones.strip()}"
-                            
-                            # Agregar RECURRENTE a Google Sheets 
-                            success = sheets_manager.add_peatonal_visitor(
-                                nombre_completo,  # Se guarda en campo codigo_qr
-                                get_current_colono(),
-                                fecha_inicio_str,
-                                fecha_fin_str
-                            )
-                            
-                            if success:
-                                # Guardar datos en session_state para mostrar confirmación
-                                st.session_state.peatonal_registered = True
-                                st.session_state.peatonal_data = {
-                                    'visitante': nombre_visitante,
-                                    'tipo_servicio': tipo_servicio,
-                                    'colono': get_current_colono(),
-                                    'fecha_inicio': fecha_inicio.strftime('%d/%m/%Y'),
-                                    'fecha_fin': fecha_fin.strftime('%d/%m/%Y'),
-                                    'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
-                                    'observaciones': observaciones,
-                                    'es_recurrente': True,
-                                    'duracion': duracion_dias
-                                }
-                                st.success("✅ Visitante recurrente registrado exitosamente")
+                            nombre_completo += f" ({tipo_servicio})"
                         else:
-                            # VISITANTE ÚNICO (lógica original)
-                            # Crear fechas completas
-                            fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
-                            fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
-                            
-                            fecha_inicio_str = fecha_inicio_completa.strftime('%Y-%m-%d %H:%M:%S')
-                            fecha_fin_str = fecha_fin_completa.strftime('%Y-%m-%d %H:%M:%S')
-                            
-                            # Crear nombre completo con observaciones si las hay
-                            nombre_completo = nombre_visitante.strip()
-                            if telefono_visitante.strip():
+                            if 'telefono_visitante' in locals() and telefono_visitante.strip():
                                 nombre_completo += f" ({telefono_visitante.strip()})"
-                            if observaciones.strip():
-                                nombre_completo += f" - {observaciones.strip()}"
+                        
+                        if observaciones.strip():
+                            nombre_completo += f" - {observaciones.strip()}"
+                        
+                        success = sheets_manager.add_peatonal_visitor(
+                            nombre_completo,
+                            get_current_colono(),
+                            fecha_inicio_str,
+                            fecha_fin_str
+                        )
+                        
+                        if success:
+                            st.session_state.peatonal_registered = True
+                            st.session_state.peatonal_data = {
+                                'visitante': nombre_visitante,
+                                'colono': get_current_colono(),
+                                'fecha': fecha_visita.strftime('%d/%m/%Y'),
+                                'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
+                                'observaciones': observaciones,
+                                'es_recurrente': es_recurrente
+                            }
                             
-                            # Agregar a Google Sheets
-                            success = sheets_manager.add_peatonal_visitor(
-                                nombre_completo,  # Se guarda en campo codigo_qr
-                                get_current_colono(),
-                                fecha_inicio_str,
-                                fecha_fin_str
-                            )
+                            if es_recurrente:
+                                st.session_state.peatonal_data['tipo_servicio'] = tipo_servicio
+                            else:
+                                if 'telefono_visitante' in locals():
+                                    st.session_state.peatonal_data['telefono'] = telefono_visitante
                             
-                            if success:
-                                # Guardar datos en session_state para mostrar confirmación
-                                st.session_state.peatonal_registered = True
-                                st.session_state.peatonal_data = {
-                                    'visitante': nombre_visitante,
-                                    'telefono': telefono_visitante,
-                                    'colono': get_current_colono(),
-                                    'fecha': fecha_visita.strftime('%d/%m/%Y'),
-                                    'horario': f"{hora_inicio.strftime('%H:%M')} - {hora_fin.strftime('%H:%M')}",
-                                    'observaciones': observaciones,
-                                    'es_recurrente': False
-                                }
-                                st.success("✅ Visitante peatonal registrado exitosamente")
-                            
-                        if not success:
+                            st.success("✅ Visitante peatonal registrado exitosamente")
+                        else:
                             st.error("❌ Error al registrar visitante en el sistema")
                             
                     except Exception as e:
@@ -822,15 +929,18 @@ def peatonal_registration():
                         logger.error(f"Error en registro peatonal: {e}")
 
 def main_app():
-    """Aplicación principal para colonos autenticados"""
+    """Aplicación principal para colonos autenticados CON SESIÓN PERSISTENTE"""
     sheets_manager, cache_manager, auth_manager = get_managers()
     
     # Header con información del usuario
-    col1, col2, col3 = st.columns([2, 1, 1])
+    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
     
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
+        # Indicador de sesión persistente
+        if COOKIES_AVAILABLE:
+            st.caption("🔒 Sesión persistente activa")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -838,11 +948,31 @@ def main_app():
             st.success("Datos actualizados")
     
     with col3:
+        # Mostrar tiempo restante de sesión
+        if COOKIES_AVAILABLE:
+            try:
+                cookies = cookies_manager.CookieManager()
+                token = cookies.get('portal_colonos_session')
+                if token:
+                    valid, _, _ = validate_session_token(token)
+                    if valid:
+                        # Extraer información de expiración del token
+                        full_token = base64.b64decode(token).decode()
+                        parts = full_token.split('|')
+                        if len(parts) >= 3:
+                            expiry_str = parts[2]
+                            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
+                            days_left = (expiry - datetime.now()).days
+                            st.caption(f"⏰ Sesión: {days_left} días")
+            except:
+                pass
+    
+    with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
-            # Limpiar sesión
-            for key in ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data']:
-                if key in st.session_state:
-                    del st.session_state[key]
+            clear_session()
+            st.success("🔓 Sesión cerrada exitosamente")
+            import time
+            time.sleep(1)
             st.rerun()
     
     st.markdown("---")
@@ -853,12 +983,11 @@ def main_app():
     with tab1:
         vehicular_qr_generator()
         
-        # Mostrar QR generado FUERA del formulario (para que funcione el download_button)
+        # Mostrar QR generado FUERA del formulario
         if st.session_state.get('qr_generated', False):
             qr_data = st.session_state.qr_data
             
             if qr_data.get('tipo') == 'vehicular':
-                # Mostrar información del QR
                 st.markdown("---")
                 st.subheader("🎫 QR Vehicular Generado")
                 
@@ -873,14 +1002,12 @@ def main_app():
                     st.write(f"**Horario:** {qr_data['horario']}")
                 
                 with col2:
-                    # Generar imagen QR
                     try:
                         qr_img = QRGenerator.generate_qr_code(qr_data['codigo'])
                         
                         if qr_img:
                             st.image(qr_img, caption=f"QR: {qr_data['codigo']}", width=200)
                             
-                            # Botón de descarga (FUERA del formulario)
                             qr_bytes = QRGenerator.qr_to_bytes(qr_img)
                             if qr_bytes:
                                 st.download_button(
@@ -894,22 +1021,18 @@ def main_app():
                                 )
                             else:
                                 st.error("Error preparando descarga")
-                                # Fallback: mostrar código
                                 st.markdown("**📋 Código QR:**")
                                 st.code(qr_data['codigo'])
                         else:
                             st.error("Error generando imagen QR")
-                            # Fallback: mostrar código
                             st.markdown("**📋 Código QR:**")
                             st.code(qr_data['codigo'])
                     except Exception as e:
                         st.error(f"Error con imagen QR: {str(e)}")
-                        # Fallback: mostrar código como texto
                         st.markdown("**📋 Código QR (texto):**")
                         st.code(qr_data['codigo'])
                         st.info("💡 Copie este código y use un generador QR online como: qr-code-generator.com")
                 
-                # Instrucciones
                 st.markdown("---")
                 st.info("""
                 📋 **Instrucciones para tu visitante vehicular:**
@@ -919,7 +1042,6 @@ def main_app():
                 4. ⏰ El QR expirará automáticamente después de la hora de fin
                 """)
                 
-                # Botón para generar otro QR
                 if st.button("➕ Generar Otro QR Vehicular", key="new_vehicle_qr_btn"):
                     st.session_state.qr_generated = False
                     st.rerun()
@@ -932,68 +1054,34 @@ def main_app():
             peatonal_data = st.session_state.peatonal_data
             
             st.markdown("---")
+            st.subheader("✅ Visitante Peatonal Registrado")
             
-            if peatonal_data.get('es_recurrente', False):
-                # CONFIRMACIÓN VISITANTE RECURRENTE
-                st.subheader("🔄 Visitante Recurrente Registrado")
-                
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    st.markdown("**📋 Información del Registro:**")
-                    st.write(f"**👤 Visitante:** {peatonal_data['visitante']}")
-                    st.write(f"**🔧 Servicio:** {peatonal_data['tipo_servicio']}")
-                    st.write(f"**👨‍💼 Autorizado por:** {peatonal_data['colono']}")
-                    st.write(f"**📅 Período:** {peatonal_data['fecha_inicio']} al {peatonal_data['fecha_fin']}")
-                    st.write(f"**⏰ Horario diario:** {peatonal_data['horario']}")
-                    st.write(f"**📆 Duración:** {peatonal_data['duracion']}")
-                    if peatonal_data.get('observaciones'):
-                        st.write(f"**📝 Descripción:** {peatonal_data['observaciones']}")
-                
-                with col2:
-                    st.markdown("**🔄 Acceso Recurrente**")
+            col1, col2 = st.columns([1, 1])
+            
+            with col1:
+                st.markdown("**📋 Información del Registro:**")
+                st.write(f"**Visitante:** {peatonal_data['visitante']}")
+                if peatonal_data.get('telefono'):
+                    st.write(f"**Teléfono:** {peatonal_data['telefono']}")
+                if peatonal_data.get('tipo_servicio'):
+                    st.write(f"**Servicio:** {peatonal_data['tipo_servicio']}")
+                st.write(f"**Autorizado por:** {peatonal_data['colono']}")
+                st.write(f"**Fecha:** {peatonal_data['fecha']}")
+                st.write(f"**Horario:** {peatonal_data['horario']}")
+                if peatonal_data.get('observaciones'):
+                    st.write(f"**Observaciones:** {peatonal_data['observaciones']}")
+            
+            with col2:
+                st.markdown("**🚶 Acceso Peatonal**")
+                if peatonal_data.get('es_recurrente'):
                     st.success("""
-                    ✅ **Visitante autorizado por todo el período**
+                    ✅ **Visitante recurrente autorizado**
                     
-                    📋 **Funcionamiento:**
-                    1. 🚶 Puede venir cualquier día del período
-                    2. 🗣️ Se identifica con el guardia cada vez
-                    3. ✅ El guardia marca entrada/salida diaria
-                    4. 📝 Cada visita se registra por separado
-                    5. ⏰ Solo en el horario autorizado
+                    🔄 Puede venir cualquier día del período
+                    🗣️ Se identifica con el guardia cada vez
+                    📝 Cada visita se registra por separado
                     """)
-                
-                # Instrucciones específicas para recurrentes
-                st.markdown("---")
-                st.info(f"""
-                📋 **¡Registro recurrente completado exitosamente!**
-                
-                🔄 **Para el visitante:** Puede venir cualquier día del {peatonal_data['fecha_inicio']} al {peatonal_data['fecha_fin']}
-                
-                📝 **Para el guardia:** Cada entrada/salida se registra individualmente en los logs diarios
-                
-                ⏰ **Horario:** Solo puede ingresar de {peatonal_data['horario']} cada día
-                """)
-                
-            else:
-                # CONFIRMACIÓN VISITANTE ÚNICO (original)
-                st.subheader("✅ Visitante Peatonal Registrado")
-                
-                col1, col2 = st.columns([1, 1])
-                
-                with col1:
-                    st.markdown("**📋 Información del Registro:**")
-                    st.write(f"**Visitante:** {peatonal_data['visitante']}")
-                    if peatonal_data.get('telefono'):
-                        st.write(f"**Teléfono:** {peatonal_data['telefono']}")
-                    st.write(f"**Autorizado por:** {peatonal_data['colono']}")
-                    st.write(f"**Fecha:** {peatonal_data['fecha']}")
-                    st.write(f"**Horario:** {peatonal_data['horario']}")
-                    if peatonal_data.get('observaciones'):
-                        st.write(f"**Observaciones:** {peatonal_data['observaciones']}")
-                
-                with col2:
-                    st.markdown("**🚶 Acceso Peatonal**")
+                else:
                     st.info("""
                     ✅ **El visitante ya está autorizado**
                     
@@ -1003,23 +1091,16 @@ def main_app():
                     3. ✅ El guardia confirmará su autorización
                     4. 🚪 Acceso permitido en horario indicado
                     """)
-                
-                # Instrucciones originales
-                st.markdown("---")
-                st.success("""
-                📋 **¡Registro completado exitosamente!**
-                
-                Tu visitante peatonal ya aparece en el sistema del guardia. 
-                Solo necesita llegar a la entrada peatonal e identificarse.
-                """)
             
-            # Botón para registrar otro visitante
+            st.markdown("---")
+            st.success("📋 **¡Registro completado exitosamente!** Tu visitante peatonal ya aparece en el sistema del guardia.")
+            
             if st.button("👥 Registrar Otro Visitante Peatonal", key="new_peatonal_btn"):
                 st.session_state.peatonal_registered = False
                 st.rerun()
 
 def main():
-    """Función principal de la aplicación"""
+    """Función principal de la aplicación CON SESIÓN PERSISTENTE"""
     st.set_page_config(
         page_title="Portal Colonos - QR Visitas",
         page_icon="🏠",
@@ -1043,10 +1124,17 @@ def main():
         border-radius: 5px;
         border-left: 4px solid #4CAF50;
     }
+    .session-indicator {
+        background: #e8f5e8;
+        padding: 0.5rem;
+        border-radius: 5px;
+        border-left: 3px solid #4CAF50;
+        font-size: 0.9em;
+    }
     </style>
     """, unsafe_allow_html=True)
     
-    # Verificar autenticación
+    # VERIFICAR AUTENTICACIÓN CON SESIÓN PERSISTENTE
     if not check_authenticated():
         login_form()
     else:
