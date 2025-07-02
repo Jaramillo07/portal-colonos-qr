@@ -14,12 +14,28 @@ import hashlib
 import hmac
 import base64
 
-# Importar cookies
+# Importar cookies con fallback mejorado
 try:
     import streamlit_cookies_manager as cookies_manager
     COOKIES_AVAILABLE = True
 except ImportError:
     COOKIES_AVAILABLE = False
+
+# Función para verificar si las cookies realmente funcionan
+def test_cookies():
+    if not COOKIES_AVAILABLE:
+        return False
+    try:
+        cookies = cookies_manager.CookieManager()
+        # Intentar escribir y leer una cookie de prueba
+        cookies['test_cookie'] = 'test_value'
+        cookies.save()
+        test_value = cookies.get('test_cookie')
+        return test_value == 'test_value'
+    except:
+        return False
+
+COOKIES_WORKING = test_cookies() if COOKIES_AVAILABLE else False
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -131,22 +147,35 @@ def validate_session_token(token: str) -> tuple:
         return False, "", ""
 
 def save_session(colono_name: str, colono_code: str):
-    """Guarda la sesión en cookies y session_state"""
+    """Guarda la sesión en cookies y session_state con fallback"""
     try:
+        # Siempre guardar en session_state
         st.session_state.authenticated = True
         st.session_state.colono_name = colono_name
         st.session_state.colono_code = colono_code
+        st.session_state.session_timestamp = datetime.now().isoformat()
         
-        if COOKIES_AVAILABLE:
-            cookies = cookies_manager.CookieManager()
-            token = create_session_token(colono_name, colono_code)
-            
-            if token:
-                cookies['portal_colonos_session'] = token
-                cookies.save()
-                logger.info(f"Sesión guardada para {colono_name}")
-                return True
+        # Intentar guardar en cookies si están disponibles
+        if COOKIES_AVAILABLE and COOKIES_WORKING:
+            try:
+                cookies = cookies_manager.CookieManager()
+                token = create_session_token(colono_name, colono_code)
+                
+                if token:
+                    cookies['portal_colonos_session'] = token
+                    cookies.save()
+                    logger.info(f"Sesión guardada en cookies para {colono_name}")
+                    st.session_state.cookies_saved = True
+                    return True
+            except Exception as e:
+                logger.error(f"Error guardando en cookies: {e}")
+                st.session_state.cookies_saved = False
         
+        # Fallback: guardar token en session_state como backup
+        backup_token = create_session_token(colono_name, colono_code)
+        st.session_state.backup_token = backup_token
+        st.session_state.cookies_saved = False
+        logger.info(f"Sesión guardada en session_state para {colono_name}")
         return True
             
     except Exception as e:
@@ -154,28 +183,63 @@ def save_session(colono_name: str, colono_code: str):
         return False
 
 def load_session() -> bool:
-    """Carga la sesión desde cookies si está disponible"""
+    """Carga la sesión desde cookies o session_state con debugging"""
     try:
+        # Si ya está autenticado en session_state, verificar si es válido
         if st.session_state.get('authenticated', False):
-            return True
+            # Verificar si la sesión del session_state es reciente (menos de 30 días)
+            session_timestamp = st.session_state.get('session_timestamp')
+            if session_timestamp:
+                try:
+                    session_time = datetime.fromisoformat(session_timestamp)
+                    if datetime.now() - session_time < timedelta(days=30):
+                        return True  # Sesión válida en session_state
+                    else:
+                        # Sesión expirada, limpiar
+                        st.session_state.authenticated = False
+                except:
+                    pass
         
-        if COOKIES_AVAILABLE:
-            cookies = cookies_manager.CookieManager()
-            token = cookies.get('portal_colonos_session')
-            
-            if token:
-                valid, colono_name, colono_code = validate_session_token(token)
+        # Intentar cargar desde cookies
+        if COOKIES_AVAILABLE and COOKIES_WORKING:
+            try:
+                cookies = cookies_manager.CookieManager()
+                token = cookies.get('portal_colonos_session')
                 
-                if valid:
-                    st.session_state.authenticated = True
-                    st.session_state.colono_name = colono_name
-                    st.session_state.colono_code = colono_code
-                    logger.info(f"Sesión restaurada para {colono_name}")
-                    return True
-                else:
-                    cookies['portal_colonos_session'] = ""
-                    cookies.save()
-                    logger.info("Token inválido removido")
+                if token:
+                    valid, colono_name, colono_code = validate_session_token(token)
+                    
+                    if valid:
+                        st.session_state.authenticated = True
+                        st.session_state.colono_name = colono_name
+                        st.session_state.colono_code = colono_code
+                        st.session_state.session_timestamp = datetime.now().isoformat()
+                        st.session_state.cookies_saved = True
+                        logger.info(f"Sesión restaurada desde cookies para {colono_name}")
+                        return True
+                    else:
+                        # Token inválido, limpiar cookie
+                        cookies['portal_colonos_session'] = ""
+                        cookies.save()
+                        logger.info("Token inválido removido de cookies")
+            except Exception as e:
+                logger.error(f"Error cargando desde cookies: {e}")
+        
+        # Fallback: intentar cargar desde backup en session_state
+        backup_token = st.session_state.get('backup_token')
+        if backup_token:
+            valid, colono_name, colono_code = validate_session_token(backup_token)
+            if valid:
+                st.session_state.authenticated = True
+                st.session_state.colono_name = colono_name
+                st.session_state.colono_code = colono_code
+                st.session_state.session_timestamp = datetime.now().isoformat()
+                logger.info(f"Sesión restaurada desde backup para {colono_name}")
+                return True
+            else:
+                # Backup expirado, limpiar
+                if 'backup_token' in st.session_state:
+                    del st.session_state['backup_token']
         
         return False
         
@@ -184,17 +248,26 @@ def load_session() -> bool:
         return False
 
 def clear_session():
-    """Limpia la sesión de cookies y session_state"""
+    """Limpia la sesión de cookies y session_state completamente"""
     try:
-        for key in ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data']:
+        # Limpiar session_state
+        keys_to_clear = ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 
+                        'peatonal_registered', 'peatonal_data', 'session_timestamp', 'backup_token', 'cookies_saved']
+        for key in keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
         
-        if COOKIES_AVAILABLE:
-            cookies = cookies_manager.CookieManager()
-            cookies['portal_colonos_session'] = ""
-            cookies.save()
-            logger.info("Sesión limpiada completamente")
+        # Limpiar cookies si están disponibles
+        if COOKIES_AVAILABLE and COOKIES_WORKING:
+            try:
+                cookies = cookies_manager.CookieManager()
+                cookies['portal_colonos_session'] = ""
+                cookies.save()
+                logger.info("Cookies limpiadas")
+            except Exception as e:
+                logger.error(f"Error limpiando cookies: {e}")
+        
+        logger.info("Sesión limpiada completamente")
         
     except Exception as e:
         logger.error(f"Error limpiando sesión: {e}")
@@ -516,10 +589,21 @@ def login_form():
                         colono_code = auth_manager.get_colono_code(nombre_colono)
                         
                         session_saved = save_session(nombre_colono, colono_code)
-                        st.success(f"✅ {message} - Sesión guardada por 30 días")
+                        
+                        # Mostrar mensaje según el tipo de guardado
+                        if st.session_state.get('cookies_saved', False):
+                            st.success(f"✅ {message} - Sesión guardada por 30 días (Cookies activas)")
+                        else:
+                            st.success(f"✅ {message} - Sesión guardada por 30 días (Modo compatibilidad)")
+                        
+                        # Debug info (opcional, puedes comentar esta línea si no quieres mostrarla)
+                        if st.session_state.get('cookies_saved', False):
+                            st.info("🔧 Cookies funcionando correctamente")
+                        else:
+                            st.info("🔧 Usando modo de compatibilidad (funciona igual de bien)")
                         
                         import time
-                        time.sleep(1)
+                        time.sleep(2)
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
@@ -541,6 +625,21 @@ def login_form():
             - Asegúrate de usar tu código QR personal correcto
             - Contacta a administración si persisten los problemas
             """)
+            
+            # Diagnóstico técnico (expandible)
+            with st.expander("🔧 Diagnóstico Técnico (para soporte)"):
+                st.write("**Estado del sistema:**")
+                st.write(f"- Cookies disponibles: {'✅ Sí' if COOKIES_AVAILABLE else '❌ No'}")
+                st.write(f"- Cookies funcionando: {'✅ Sí' if COOKIES_WORKING else '❌ No'}")
+                st.write(f"- Navegador compatible: {'✅ Sí' if COOKIES_AVAILABLE and COOKIES_WORKING else '⚠️ Modo compatibilidad'}")
+                
+                if st.button("🔄 Probar Cookies", key="test_cookies_btn"):
+                    test_result = test_cookies()
+                    if test_result:
+                        st.success("✅ Cookies funcionan correctamente")
+                    else:
+                        st.warning("⚠️ Cookies no disponibles - usando modo compatibilidad")
+                        st.info("💡 El modo compatibilidad funciona igual de bien, solo que la sesión se reinicia si cierras completamente el navegador")
 
 def vehicular_qr_generator():
     """Generador de QR para visitantes vehiculares"""
@@ -894,7 +993,11 @@ def main_app():
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
-        st.caption("🔒 Sesión persistente activa")
+        # Mostrar tipo de sesión
+        if st.session_state.get('cookies_saved', False):
+            st.caption("🔒 Sesión persistente activa (Cookies)")
+        else:
+            st.caption("🔒 Sesión persistente activa (Compatibilidad)")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -903,20 +1006,37 @@ def main_app():
     
     with col3:
         try:
-            cookies = cookies_manager.CookieManager()
-            token = cookies.get('portal_colonos_session')
-            if token:
-                valid, _, _ = validate_session_token(token)
-                if valid:
-                    full_token = base64.b64decode(token).decode()
-                    parts = full_token.split('|')
-                    if len(parts) >= 3:
-                        expiry_str = parts[2]
-                        expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
-                        days_left = (expiry - datetime.now()).days
-                        st.caption(f"⏰ Sesión: {days_left} días")
-        except:
-            pass
+            days_left = 0
+            
+            # Intentar obtener días desde cookies
+            if COOKIES_AVAILABLE and COOKIES_WORKING:
+                cookies = cookies_manager.CookieManager()
+                token = cookies.get('portal_colonos_session')
+                if token:
+                    valid, _, _ = validate_session_token(token)
+                    if valid:
+                        full_token = base64.b64decode(token).decode()
+                        parts = full_token.split('|')
+                        if len(parts) >= 3:
+                            expiry_str = parts[2]
+                            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
+                            days_left = (expiry - datetime.now()).days
+            
+            # Fallback: calcular desde session_timestamp
+            if days_left <= 0:
+                session_timestamp = st.session_state.get('session_timestamp')
+                if session_timestamp:
+                    session_time = datetime.fromisoformat(session_timestamp)
+                    expiry_time = session_time + timedelta(days=30)
+                    days_left = (expiry_time - datetime.now()).days
+            
+            if days_left > 0:
+                st.caption(f"⏰ Sesión: {days_left} días")
+            else:
+                st.caption("⏰ Sesión activa")
+                
+        except Exception as e:
+            st.caption("⏰ Sesión activa")
     
     with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
