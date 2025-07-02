@@ -136,11 +136,11 @@ def validate_auto_login_token(token: str) -> tuple:
 def check_auto_login():
     """Verifica si hay un token de auto-login en la URL"""
     try:
-        # Obtener parámetros de la URL
-        query_params = st.experimental_get_query_params()
+        # Obtener parámetros de la URL (nueva sintaxis de Streamlit)
+        query_params = st.query_params
         
         if 'auth' in query_params:
-            token = query_params['auth'][0]
+            token = query_params['auth']
             valid, colono_name, colono_code = validate_auto_login_token(token)
             
             if valid:
@@ -151,13 +151,14 @@ def check_auto_login():
                 st.session_state.auto_login = True
                 
                 # Limpiar URL para que no quede el token visible
-                st.experimental_set_query_params()
+                del st.query_params['auth']
                 
                 logger.info(f"Auto-login exitoso para {colono_name}")
                 return True
             else:
                 # Token inválido, limpiar URL
-                st.experimental_set_query_params()
+                if 'auth' in st.query_params:
+                    del st.query_params['auth']
                 
         return False
         
