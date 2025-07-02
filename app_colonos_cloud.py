@@ -10,9 +10,6 @@ import os
 import json
 from datetime import datetime, time, date, timedelta
 import logging
-import hashlib
-import hmac
-import base64
 
 # Configuración de logging
 logging.basicConfig(level=logging.INFO)
@@ -24,8 +21,6 @@ CONFIG = {
     'CACHE_FILE': 'cache_colonos.csv',
     'HORARIO_INICIO': time(6, 0),  # 6:00 AM
     'HORARIO_FIN': time(23, 0),    # 11:00 PM
-    'SESSION_DURATION_DAYS': 30,    # Sesión válida por 30 días
-    'SECRET_KEY': 'PORTONDELOSGIRASOLES2025'
 }
 
 def get_mexico_date():
@@ -50,110 +45,6 @@ def get_google_credentials():
     except Exception as e:
         logger.error(f"Error obteniendo credenciales: {e}")
         return None
-
-# ============== SISTEMA ESPECÍFICO PARA PWA ==============
-
-def create_pwa_token(colono_name: str, colono_code: str) -> str:
-    """Crea un token permanente para PWA"""
-    try:
-        expiry = datetime.now() + timedelta(days=CONFIG['SESSION_DURATION_DAYS'])
-        expiry_str = expiry.strftime('%Y%m%d%H%M%S')
-        
-        # Crear datos del token
-        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
-        
-        # Crear firma HMAC
-        signature = hmac.new(
-            CONFIG['SECRET_KEY'].encode(),
-            token_data.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        # Combinar y codificar
-        full_token = f"{token_data}|{signature}"
-        token_encoded = base64.urlsafe_b64encode(full_token.encode()).decode()
-        
-        logger.info(f"Token PWA creado para {colono_name}")
-        return token_encoded
-        
-    except Exception as e:
-        logger.error(f"Error creando token PWA: {e}")
-        return ""
-
-def validate_pwa_token(token: str) -> tuple:
-    """Valida token PWA y retorna (valid, colono_name, colono_code)"""
-    try:
-        if not token:
-            return False, "", ""
-        
-        # Decodificar
-        try:
-            full_token = base64.urlsafe_b64decode(token).decode()
-        except:
-            return False, "", ""
-        
-        # Dividir partes
-        parts = full_token.split('|')
-        if len(parts) != 4:
-            return False, "", ""
-        
-        colono_name, colono_code, expiry_str, signature = parts
-        
-        # Verificar firma
-        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
-        expected_signature = hmac.new(
-            CONFIG['SECRET_KEY'].encode(),
-            token_data.encode(),
-            hashlib.sha256
-        ).hexdigest()
-        
-        if not hmac.compare_digest(signature, expected_signature):
-            return False, "", ""
-        
-        # Verificar expiración
-        try:
-            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
-            if datetime.now() > expiry:
-                return False, "", ""
-        except:
-            return False, "", ""
-        
-        return True, colono_name, colono_code
-        
-    except Exception as e:
-        logger.error(f"Error validando token PWA: {e}")
-        return False, "", ""
-
-def check_pwa_auto_login():
-    """Verifica auto-login desde URL para PWA"""
-    try:
-        # Verificar parámetros de URL
-        query_params = st.query_params
-        
-        if 'pwa' in query_params:
-            token = query_params['pwa']
-            valid, colono_name, colono_code = validate_pwa_token(token)
-            
-            if valid:
-                # Auto-login exitoso
-                st.session_state.authenticated = True
-                st.session_state.colono_name = colono_name
-                st.session_state.colono_code = colono_code
-                st.session_state.pwa_login = True
-                
-                logger.info(f"PWA auto-login exitoso para {colono_name}")
-                return True
-            else:
-                # Token inválido
-                st.error("🔒 Enlace de acceso expirado o inválido")
-                if 'pwa' in st.query_params:
-                    del st.query_params['pwa']
-        
-        return False
-        
-    except Exception as e:
-        logger.error(f"Error en PWA auto-login: {e}")
-        return False
 
 class GoogleSheetsManager:
     """Maneja la conexión y operaciones con Google Sheets"""
@@ -406,11 +297,7 @@ class AuthManager:
             return ""
 
 def check_authenticated():
-    """Verifica si el usuario está autenticado (incluye PWA auto-login)"""
-    # Primero verificar auto-login PWA
-    if not st.session_state.get('authenticated', False):
-        check_pwa_auto_login()
-    
+    """Verifica si el usuario está autenticado"""
     return st.session_state.get('authenticated', False)
 
 def get_current_colono():
@@ -429,9 +316,8 @@ def get_managers():
     return sheets_manager, cache_manager, auth_manager
 
 def login_form():
-    """Formulario de login OPTIMIZADO PARA PWA"""
+    """Formulario de login para colonos"""
     st.title("🏠 Portal Colonos - Generador QR Visitas")
-    st.success("✅ Optimizado para apps del menú de inicio (PWA)")
     st.markdown("---")
     
     sheets_manager, cache_manager, auth_manager = get_managers()
@@ -472,37 +358,14 @@ def login_form():
                     if success:
                         colono_code = auth_manager.get_colono_code(nombre_colono)
                         
-                        # Autenticar normalmente
                         st.session_state.authenticated = True
                         st.session_state.colono_name = nombre_colono
                         st.session_state.colono_code = colono_code
                         
                         st.success(f"✅ {message}")
                         
-                        # Generar enlace PWA personalizado
-                        pwa_token = create_pwa_token(nombre_colono, colono_code)
-                        if pwa_token:
-                            # Construir URL completa (necesitamos hacer esto manualmente)
-                            pwa_url = f"?pwa={pwa_token}"
-                            
-                            st.success("🔗 ¡Enlace personalizado creado!")
-                            st.info("📱 **Para evitar hacer login cada vez en tu PWA:**")
-                            
-                            # Mostrar el enlace completo
-                            st.code(f"https://tu-app-url.streamlit.app{pwa_url}", language=None)
-                            
-                            st.markdown("""
-                            **📋 Cómo usarlo:**
-                            1. 📱 **Copia** el enlace de arriba
-                            2. 🌐 **Ábrelo en tu navegador** (Safari/Chrome)
-                            3. 🏠 **Vuelve a agregar al inicio** desde ese enlace
-                            4. ✅ **¡Tu nueva PWA ya no pedirá login!**
-                            
-                            *(Reemplaza la app actual con esta nueva versión)*
-                            """)
-                        
                         import time
-                        time.sleep(3)
+                        time.sleep(1)
                         st.rerun()
                     else:
                         st.error(f"❌ {message}")
@@ -514,15 +377,10 @@ def login_form():
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
             - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
-            **Para PWA (apps del menú de inicio):**
-            - 🔗 **Usa el enlace personalizado** que aparece después del login
-            - 📱 **Agrega ESE enlace** al menú de inicio (no el original)
-            - ✅ **30 días sin login** en tu PWA personalizada
-            
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
             - Asegúrate de usar tu código QR personal correcto
-            - Para PWA, usa el enlace personalizado que te damos
+            - Contacta a administración si persisten los problemas
             """)
 
 def vehicular_qr_generator():
@@ -872,15 +730,11 @@ def main_app():
     """Aplicación principal para colonos autenticados"""
     sheets_manager, cache_manager, auth_manager = get_managers()
     
-    col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+    col1, col2, col3 = st.columns([2, 1, 1])
     
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
-        if st.session_state.get('pwa_login', False):
-            st.caption("📱 PWA con auto-login activado")
-        else:
-            st.caption("🔐 Sesión normal activa")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -888,45 +742,14 @@ def main_app():
             st.success("Datos actualizados")
     
     with col3:
-        if st.button("🏠 Mi PWA", key="get_pwa_link"):
-            colono_name = get_current_colono()
-            colono_code = get_current_colono_code()
-            
-            if colono_name and colono_code:
-                pwa_token = create_pwa_token(colono_name, colono_code)
-                if pwa_token:
-                    pwa_url = f"?pwa={pwa_token}"
-                    
-                    st.session_state.show_pwa_link = True
-                    st.session_state.pwa_link = f"https://tu-app-url.streamlit.app{pwa_url}"
-    
-    with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
             # Limpiar sesión
-            for key in ['authenticated', 'colono_name', 'colono_code', 'pwa_login', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data', 'show_pwa_link', 'pwa_link']:
+            for key in ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data']:
                 if key in st.session_state:
                     del st.session_state[key]
             st.success("🔓 Sesión cerrada exitosamente")
             import time
             time.sleep(1)
-            st.rerun()
-    
-    # Mostrar enlace PWA si se solicitó
-    if st.session_state.get('show_pwa_link', False):
-        st.markdown("---")
-        st.success("🔗 **Tu enlace PWA personalizado:**")
-        st.code(st.session_state.get('pwa_link', ''), language=None)
-        st.info("""
-        📱 **Instrucciones para usar tu PWA personalizada:**
-        1. **Copia** el enlace de arriba
-        2. **Ábrelo en tu navegador** móvil
-        3. **Agrega al inicio** desde ese enlace (reemplaza la app actual)
-        4. **¡Ya no necesitarás hacer login por 30 días!**
-        """)
-        
-        if st.button("✅ Entendido", key="close_pwa_info"):
-            del st.session_state['show_pwa_link']
-            del st.session_state['pwa_link']
             st.rerun()
     
     st.markdown("---")
@@ -1051,7 +874,7 @@ def main_app():
                 st.rerun()
 
 def main():
-    """Función principal OPTIMIZADA PARA PWA"""
+    """Función principal de la aplicación"""
     st.set_page_config(
         page_title="Portal Colonos - QR Visitas",
         page_icon="🏠",
