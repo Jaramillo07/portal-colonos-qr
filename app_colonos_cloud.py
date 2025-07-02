@@ -51,206 +51,127 @@ def get_google_credentials():
         logger.error(f"Error obteniendo credenciales: {e}")
         return None
 
-# ============== SISTEMA DE SESIÓN AUTOMÁTICO PARA PWA ==============
+# ============== SISTEMA DE SESIÓN ULTRA-SIMPLE PARA PWA ==============
 
-def create_session_token(colono_name: str, colono_code: str) -> str:
-    """Crea un token de sesión seguro"""
+def create_device_session(colono_name: str, colono_code: str):
+    """Crea una sesión de dispositivo simple y efectiva"""
     try:
+        # Crear timestamp de expiración
         expiry = datetime.now() + timedelta(days=CONFIG['SESSION_DURATION_DAYS'])
-        expiry_str = expiry.strftime('%Y%m%d%H%M%S')
         
-        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
-        signature = hmac.new(
-            CONFIG['SECRET_KEY'].encode(),
-            token_data.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        # Guardar en session_state (se mantiene mientras no se cierre completamente la app)
+        st.session_state.device_authenticated = True
+        st.session_state.device_user_name = colono_name
+        st.session_state.device_user_code = colono_code
+        st.session_state.device_login_time = datetime.now().isoformat()
+        st.session_state.device_expiry_time = expiry.isoformat()
         
-        full_token = f"{token_data}|{signature}"
-        token_bytes = base64.b64encode(full_token.encode()).decode()
+        # Crear un hash único del dispositivo/navegador
+        import hashlib
+        user_agent = st.context.headers.get("user-agent", "unknown")
+        device_hash = hashlib.md5(f"{colono_name}{user_agent}{CONFIG['SECRET_KEY']}".encode()).hexdigest()
+        st.session_state.device_hash = device_hash
         
-        logger.info(f"Token creado para {colono_name}")
-        return token_bytes
+        # Crear URL auto-login para marcador
+        auto_login_data = f"{colono_name}|{colono_code}|{expiry.strftime('%Y%m%d%H%M%S')}"
+        signature = hmac.new(CONFIG['SECRET_KEY'].encode(), auto_login_data.encode(), hashlib.sha256).hexdigest()
+        auto_token = base64.urlsafe_b64encode(f"{auto_login_data}|{signature}".encode()).decode()
+        
+        # Almacenar el token para mostrar al usuario
+        st.session_state.auto_login_url = f"?auto={auto_token}"
+        
+        logger.info(f"Sesión de dispositivo creada para {colono_name}")
+        return True
         
     except Exception as e:
-        logger.error(f"Error creando token: {e}")
-        return ""
+        logger.error(f"Error creando sesión de dispositivo: {e}")
+        return False
 
-def validate_session_token(token: str) -> tuple:
-    """Valida un token de sesión"""
+def check_device_session():
+    """Verifica si hay una sesión de dispositivo válida"""
     try:
-        if not token:
-            return False, "", ""
+        # Verificar sesión normal en session_state
+        if st.session_state.get('device_authenticated', False):
+            expiry_str = st.session_state.get('device_expiry_time')
+            if expiry_str:
+                expiry = datetime.fromisoformat(expiry_str)
+                if datetime.now() < expiry:
+                    # Sesión válida
+                    st.session_state.authenticated = True
+                    st.session_state.colono_name = st.session_state.get('device_user_name')
+                    st.session_state.colono_code = st.session_state.get('device_user_code')
+                    return True
+                else:
+                    # Sesión expirada
+                    clear_device_session()
         
-        try:
-            full_token = base64.b64decode(token).decode()
-        except:
-            return False, "", ""
+        # Verificar auto-login por URL
+        query_params = st.query_params
+        if 'auto' in query_params:
+            auto_token = query_params['auto']
+            if validate_auto_token(auto_token):
+                return True
         
-        parts = full_token.split('|')
+        return False
+        
+    except Exception as e:
+        logger.error(f"Error verificando sesión de dispositivo: {e}")
+        return False
+
+def validate_auto_token(token: str) -> bool:
+    """Valida token de auto-login desde URL"""
+    try:
+        decoded = base64.urlsafe_b64decode(token).decode()
+        parts = decoded.split('|')
+        
         if len(parts) != 4:
-            return False, "", ""
-        
+            return False
+            
         colono_name, colono_code, expiry_str, signature = parts
         
-        token_data = f"{colono_name}|{colono_code}|{expiry_str}"
-        expected_signature = hmac.new(
-            CONFIG['SECRET_KEY'].encode(),
-            token_data.encode(),
-            hashlib.sha256
-        ).hexdigest()
+        # Verificar firma
+        auto_login_data = f"{colono_name}|{colono_code}|{expiry_str}"
+        expected_signature = hmac.new(CONFIG['SECRET_KEY'].encode(), auto_login_data.encode(), hashlib.sha256).hexdigest()
         
         if not hmac.compare_digest(signature, expected_signature):
-            return False, "", ""
+            return False
         
-        try:
-            expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
-            if datetime.now() > expiry:
-                return False, "", ""
-        except:
-            return False, "", ""
+        # Verificar expiración
+        expiry = datetime.strptime(expiry_str, '%Y%m%d%H%M%S')
+        if datetime.now() > expiry:
+            return False
         
-        return True, colono_name, colono_code
-        
-    except Exception as e:
-        logger.error(f"Error validando token: {e}")
-        return False, "", ""
-
-def auto_save_session(colono_name: str, colono_code: str):
-    """Guarda automáticamente la sesión usando localStorage"""
-    try:
-        # Guardar en session_state
+        # Auto-login exitoso
         st.session_state.authenticated = True
         st.session_state.colono_name = colono_name
         st.session_state.colono_code = colono_code
-        st.session_state.login_time = datetime.now().isoformat()
+        create_device_session(colono_name, colono_code)
         
-        # Crear token
-        token = create_session_token(colono_name, colono_code)
+        # Limpiar URL
+        del st.query_params['auto']
         
-        if token:
-            # JavaScript para guardar automáticamente en localStorage
-            save_js = f"""
-            <script>
-            (function() {{
-                try {{
-                    // Guardar token en localStorage
-                    localStorage.setItem('portal_colonos_token', '{token}');
-                    localStorage.setItem('portal_colonos_user', '{colono_name}');
-                    localStorage.setItem('portal_colonos_saved', 'true');
-                    
-                    // Marcar como guardado exitosamente
-                    window.sessionSaved = true;
-                    
-                    console.log('✅ Sesión guardada automáticamente');
-                }} catch(e) {{
-                    console.error('Error guardando sesión:', e);
-                    window.sessionSaved = false;
-                }}
-            }})();
-            </script>
-            """
-            
-            # Ejecutar JavaScript invisiblemente
-            st.components.v1.html(save_js, height=0)
-            
-            logger.info(f"Sesión auto-guardada para {colono_name}")
-            return True
-        
-        return False
+        logger.info(f"Auto-login exitoso para {colono_name}")
+        return True
         
     except Exception as e:
-        logger.error(f"Error auto-guardando sesión: {e}")
+        logger.error(f"Error validando auto-token: {e}")
         return False
 
-def auto_load_session():
-    """Carga automáticamente la sesión desde localStorage"""
+def clear_device_session():
+    """Limpia la sesión del dispositivo"""
     try:
-        # Si ya está autenticado, no hacer nada
-        if st.session_state.get('authenticated', False):
-            return True
+        keys_to_clear = [
+            'device_authenticated', 'device_user_name', 'device_user_code', 
+            'device_login_time', 'device_expiry_time', 'device_hash',
+            'authenticated', 'colono_name', 'colono_code', 'auto_login_url',
+            'qr_generated', 'qr_data', 'peatonal_registered', 'peatonal_data'
+        ]
         
-        # JavaScript para cargar automáticamente desde localStorage
-        load_js = """
-        <script>
-        (function() {
-            try {
-                const token = localStorage.getItem('portal_colonos_token');
-                const user = localStorage.getItem('portal_colonos_user');
-                
-                if (token && user) {
-                    // Enviar datos al componente padre usando postMessage
-                    const message = {
-                        type: 'auto_login',
-                        token: token,
-                        user: user
-                    };
-                    
-                    // Enviar mensaje al padre
-                    window.parent.postMessage(message, '*');
-                    
-                    console.log('🔄 Intentando auto-login para:', user);
-                } else {
-                    console.log('❌ No hay sesión guardada');
-                }
-            } catch(e) {
-                console.error('Error cargando sesión:', e);
-            }
-        })();
-        
-        // Escuchar mensajes del iframe
-        window.addEventListener('message', function(event) {
-            if (event.data && event.data.type === 'auto_login') {
-                // Aquí Streamlit recibiría los datos, pero necesitamos otro método
-                console.log('Datos de auto-login recibidos');
-            }
-        });
-        </script>
-        """
-        
-        # Ejecutar JavaScript
-        st.components.v1.html(load_js, height=0)
-        
-        # Como JavaScript no puede comunicarse directamente con Streamlit,
-        # usamos un enfoque diferente: verificar en cada carga de página
-        if 'check_auto_login' not in st.session_state:
-            st.session_state.check_auto_login = True
-            st.rerun()  # Recargar para activar el check
-            
-        return False
-        
-    except Exception as e:
-        logger.error(f"Error auto-cargando sesión: {e}")
-        return False
-
-def clear_auto_session():
-    """Limpia automáticamente la sesión"""
-    try:
-        # Limpiar session_state
-        keys_to_clear = ['authenticated', 'colono_name', 'colono_code', 'qr_generated', 'qr_data', 
-                        'peatonal_registered', 'peatonal_data', 'login_time', 'check_auto_login']
         for key in keys_to_clear:
             if key in st.session_state:
                 del st.session_state[key]
         
-        # JavaScript para limpiar localStorage
-        clear_js = """
-        <script>
-        (function() {
-            try {
-                localStorage.removeItem('portal_colonos_token');
-                localStorage.removeItem('portal_colonos_user');
-                localStorage.removeItem('portal_colonos_saved');
-                console.log('🗑️ Sesión limpiada automáticamente');
-            } catch(e) {
-                console.error('Error limpiando sesión:', e);
-            }
-        })();
-        </script>
-        """
-        
-        st.components.v1.html(clear_js, height=0)
-        logger.info("Sesión auto-limpiada")
+        logger.info("Sesión de dispositivo limpiada")
         
     except Exception as e:
         logger.error(f"Error limpiando sesión: {e}")
@@ -506,26 +427,8 @@ class AuthManager:
             return ""
 
 def check_authenticated():
-    """Verifica si el usuario está autenticado automáticamente"""
-    # Primero verificar si ya está en session_state
-    if st.session_state.get('authenticated', False):
-        # Verificar que la sesión no haya expirado
-        login_time = st.session_state.get('login_time')
-        if login_time:
-            try:
-                login_datetime = datetime.fromisoformat(login_time)
-                if datetime.now() - login_datetime < timedelta(days=30):
-                    return True
-                else:
-                    # Sesión expirada
-                    st.session_state.authenticated = False
-            except:
-                pass
-    
-    # Si no está autenticado, intentar auto-login
-    auto_load_session()
-    
-    return st.session_state.get('authenticated', False)
+    """Verifica si el usuario está autenticado"""
+    return check_device_session()
 
 def get_current_colono():
     """Obtiene el nombre del colono autenticado"""
@@ -543,9 +446,9 @@ def get_managers():
     return sheets_manager, cache_manager, auth_manager
 
 def login_form():
-    """Formulario de login COMPLETAMENTE AUTOMÁTICO"""
+    """Formulario de login CON SISTEMA SIMPLE Y EFECTIVO"""
     st.title("🏠 Portal Colonos - Generador QR Visitas")
-    st.success("✅ Sesión automática de 30 días - ¡Sin complicaciones!")
+    st.success("✅ Sesión inteligente de 30 días - ¡Tu celular te recordará!")
     st.markdown("---")
     
     sheets_manager, cache_manager, auth_manager = get_managers()
@@ -586,12 +489,27 @@ def login_form():
                     if success:
                         colono_code = auth_manager.get_colono_code(nombre_colono)
                         
-                        # GUARDADO AUTOMÁTICO
-                        session_saved = auto_save_session(nombre_colono, colono_code)
+                        # Autenticar normalmente
+                        st.session_state.authenticated = True
+                        st.session_state.colono_name = nombre_colono
+                        st.session_state.colono_code = colono_code
+                        
+                        # Crear sesión de dispositivo
+                        device_session_created = create_device_session(nombre_colono, colono_code)
                         
                         st.success(f"✅ {message}")
-                        st.success("🔄 Sesión guardada automáticamente por 30 días")
-                        st.info("📱 La próxima vez se abrirá directamente sin login")
+                        st.success("📱 ¡Tu celular recordará esta sesión por 30 días!")
+                        
+                        # Mostrar enlace para marcador (opcional)
+                        auto_url = st.session_state.get('auto_login_url', '')
+                        if auto_url:
+                            current_url = st.context.get_hostname()  # Obtener URL actual
+                            full_auto_url = f"https://{current_url}{auto_url}"
+                            
+                            with st.expander("🔖 ¿Quieres un acceso aún más rápido? (Opcional)"):
+                                st.info("📌 **Para acceso súper rápido:** Guarda este enlace como marcador")
+                                st.code(full_auto_url, language=None)
+                                st.caption("💡 Con este marcador entrarás instantáneamente sin tocar nada")
                         
                         import time
                         time.sleep(2)
@@ -606,11 +524,11 @@ def login_form():
             - 👤 **Usuario**: Tu nombre completo como aparece en el registro
             - 🔑 **Password**: Tu código QR personal (mismo que usas en el acceso físico)
             
-            **¡Completamente automático!**
-            - ✅ **Una vez que te loggees**, la app recordará tus datos
-            - 🔄 **30 días sin volver a loggearte** 
-            - 📱 **Funciona en apps del menú de inicio**
-            - 🚪 **Solo usa "Cerrar Sesión" si quieres terminar manualmente**
+            **¡Sesión inteligente!**
+            - 📱 **Tu celular recordará** automáticamente tu sesión
+            - 🔄 **30 días completos** sin necesidad de volver a loggearte
+            - ✅ **Funciona en apps** del menú de inicio del celular
+            - 🚪 **Solo usa "Cerrar Sesión" si compartes el celular**
             
             **Si tienes problemas:**
             - Verifica que tu nombre esté escrito exactamente como en el registro
@@ -970,7 +888,7 @@ def main_app():
     with col1:
         st.title("🏠 Portal Colonos")
         st.markdown(f"**Bienvenido:** {get_current_colono()}")
-        st.caption("🔒 Sesión automática activa (30 días)")
+        st.caption("📱 Sesión inteligente activa (30 días)")
     
     with col2:
         if st.button("🔄 Actualizar Datos", key="refresh_data"):
@@ -979,13 +897,13 @@ def main_app():
     
     with col3:
         # Mostrar días restantes
-        login_time = st.session_state.get('login_time')
-        if login_time:
+        device_login_time = st.session_state.get('device_login_time')
+        if device_login_time:
             try:
-                login_datetime = datetime.fromisoformat(login_time)
+                login_datetime = datetime.fromisoformat(device_login_time)
                 days_remaining = 30 - (datetime.now() - login_datetime).days
                 if days_remaining > 0:
-                    st.caption(f"⏰ Quedan: {days_remaining} días")
+                    st.caption(f"⏰ {days_remaining} días restantes")
                 else:
                     st.caption("⏰ Sesión activa")
             except:
@@ -993,7 +911,7 @@ def main_app():
     
     with col4:
         if st.button("🚪 Cerrar Sesión", key="logout"):
-            clear_auto_session()
+            clear_device_session()
             st.success("🔓 Sesión cerrada exitosamente")
             import time
             time.sleep(1)
@@ -1121,7 +1039,7 @@ def main_app():
                 st.rerun()
 
 def main():
-    """Función principal COMPLETAMENTE AUTOMÁTICA"""
+    """Función principal con sistema de sesión ultra-simple"""
     st.set_page_config(
         page_title="Portal Colonos - QR Visitas",
         page_icon="🏠",
