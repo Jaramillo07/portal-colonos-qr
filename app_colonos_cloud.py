@@ -500,17 +500,6 @@ def login_form():
                         st.success(f"✅ {message}")
                         st.success("📱 ¡Tu celular recordará esta sesión por 30 días!")
                         
-                        # Mostrar enlace para marcador (opcional)
-                        auto_url = st.session_state.get('auto_login_url', '')
-                        if auto_url:
-                            current_url = st.context.get_hostname()  # Obtener URL actual
-                            full_auto_url = f"https://{current_url}{auto_url}"
-                            
-                            with st.expander("🔖 ¿Quieres un acceso aún más rápido? (Opcional)"):
-                                st.info("📌 **Para acceso súper rápido:** Guarda este enlace como marcador")
-                                st.code(full_auto_url, language=None)
-                                st.caption("💡 Con este marcador entrarás instantáneamente sin tocar nada")
-                        
                         import time
                         time.sleep(2)
                         st.rerun()
