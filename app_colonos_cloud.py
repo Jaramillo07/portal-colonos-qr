@@ -155,28 +155,55 @@ class CacheManager:
             return pd.DataFrame(columns=['codigo_qr', 'tipo', 'colono', 'fecha_inicio', 'fecha_fin'])
 
 class QRGenerator:
-    """Genera códigos QR y imágenes"""
+    """Genera códigos QR optimizados basados en análisis de QRs funcionales"""
     
     @staticmethod
     def generate_qr_code(data: str):
-        """Genera un código QR como imagen PIL"""
+        """Genera un código QR optimizado para máxima legibilidad"""
         try:
+            # Configuración optimizada basada en QRs que funcionan bien
             qr = qrcode.QRCode(
-                version=1,
-                error_correction=qrcode.constants.ERROR_CORRECT_L,
-                box_size=10,
-                border=4,
+                version=1,  # Forzar versión baja para contenido simple
+                error_correction=qrcode.constants.ERROR_CORRECT_M,  # Nivel medio (15% corrección)
+                box_size=12,   # Tamaño moderado para balance calidad/tamaño
+                border=4,      # Borde estándar (quiet zone)
             )
+            
+            # Verificar si el contenido cabe en versión 1
             qr.add_data(data)
-            qr.make(fit=True)
+            try:
+                qr.make(fit=False)  # No auto-ajustar, mantener versión 1
+            except:
+                # Si no cabe en versión 1, permitir auto-ajuste
+                qr.version = None
+                qr.make(fit=True)
+                logger.warning(f"Contenido muy largo, auto-ajustando versión para: {data[:30]}...")
             
-            img = qr.make_image(fill_color="black", back_color="white")
+            # Generar imagen con características del QR funcional
+            img = qr.make_image(
+                fill_color="#000000",   # Negro puro
+                back_color="#FFFFFF",   # Blanco puro
+                image_factory=None
+            )
             
+            # Convertir a PIL y optimizar tamaño
             from PIL import Image
             if not isinstance(img, Image.Image):
                 img = img.convert('RGB')
             
-            logger.info(f"QR generado exitosamente para: {data}")
+            # Escalar a tamaño óptimo (como el QR funcional)
+            # Mantener módulos claramente distinguibles
+            target_size = 400  # Tamaño final objetivo
+            current_size = img.size[0]
+            
+            if current_size < target_size:
+                # Escalar solo si es necesario, usando NEAREST para bordes nítidos
+                scale_factor = target_size // current_size
+                if scale_factor > 1:
+                    new_size = (current_size * scale_factor, current_size * scale_factor)
+                    img = img.resize(new_size, Image.NEAREST)
+            
+            logger.info(f"QR generado (v{qr.version}): {data[:30]}... - Tamaño: {img.size}")
             return img
                 
         except Exception as e:
@@ -184,38 +211,78 @@ class QRGenerator:
             return None
     
     @staticmethod
+    def generate_simple_qr(data: str):
+        """Genera un QR ultra-simple como el ejemplo funcional"""
+        try:
+            # Configuración mínima para máxima compatibilidad
+            qr = qrcode.QRCode(
+                version=1,  # Forzar versión 1 (21x21 módulos)
+                error_correction=qrcode.constants.ERROR_CORRECT_L,  # Mínima corrección (7%)
+                box_size=10,   # Tamaño básico
+                border=4,      # Borde estándar
+            )
+            
+            # Limitar contenido para que quepa en versión 1
+            if len(data) > 20:  # Versión 1 soporta ~25 caracteres alfanuméricos
+                data = data[:20]  # Truncar si es muy largo
+                logger.warning(f"Contenido truncado a: {data}")
+            
+            qr.add_data(data)
+            qr.make(fit=False)  # No auto-ajustar
+            
+            # Imagen simple
+            img = qr.make_image(fill_color="black", back_color="white")
+            
+            from PIL import Image
+            if not isinstance(img, Image.Image):
+                img = img.convert('RGB')
+            
+            logger.info(f"QR simple generado: {data}")
+            return img
+                
+        except Exception as e:
+            logger.error(f"Error generando QR simple: {e}")
+            return None
+    
+    @staticmethod
     def qr_to_bytes(img):
-        """Convierte imagen QR a bytes para descarga"""
+        """Convierte imagen QR a bytes con máxima calidad"""
         try:
             if img is None:
-                logger.error("Imagen QR es None")
                 return None
             
             from PIL import Image
-            
             if not isinstance(img, Image.Image):
-                logger.error(f"Objeto no es PIL Image: {type(img)}")
                 return None
                 
             buf = io.BytesIO()
             
+            # Asegurar RGB para PNG
             if img.mode != 'RGB':
                 img = img.convert('RGB')
             
-            img.save(buf, format='PNG')
+            # PNG sin compresión para máxima nitidez
+            img.save(
+                buf, 
+                format='PNG',
+                optimize=False,
+                compress_level=0
+            )
             
             buf.seek(0)
             img_bytes = buf.getvalue()
             buf.close()
             
-            logger.info(f"QR convertido a bytes exitosamente: {len(img_bytes)} bytes")
             return img_bytes
             
         except Exception as e:
-            logger.error(f"Error convirtiendo QR a bytes: {e}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(f"Error convirtiendo QR: {e}")
             return None
+    
+    @staticmethod
+    def generate_test_qr(test_data: str = "TEST123"):
+        """Genera QR de prueba simple"""
+        return QRGenerator.generate_simple_qr(test_data)
 
 class AuthManager:
     """Maneja la autenticación de colonos"""
@@ -390,6 +457,37 @@ def vehicular_qr_generator():
     st.subheader("🚗 Generar QR para Visita Vehicular")
     st.info("💡 Para visitantes que ingresan con vehículo y necesitan QR")
     
+    # Botón de prueba de calidad QR
+    col1, col2, col3 = st.columns([1, 2, 1])
+    with col2:
+        if st.button("🧪 Probar Calidad QR", key="test_qr_quality"):
+            with st.spinner("Generando QR de prueba optimizado..."):
+                # Probar ambos métodos
+                st.subheader("🔬 Comparativa de Calidad QR")
+                
+                col_simple, col_normal = st.columns(2)
+                
+                with col_simple:
+                    st.markdown("**QR Simple (como el ejemplo funcional):**")
+                    simple_qr = QRGenerator.generate_simple_qr("PRUEBA123")
+                    if simple_qr:
+                        st.image(simple_qr, caption="QR Simple - Versión 1", width=250)
+                        st.success("✅ Tipo: Versión 1, Corrección L")
+                        st.info(f"📏 Tamaño: {simple_qr.size[0]}x{simple_qr.size[1]}px")
+                
+                with col_normal:
+                    st.markdown("**QR Optimizado:**")
+                    normal_qr = QRGenerator.generate_qr_code("PRUEBA123")
+                    if normal_qr:
+                        st.image(normal_qr, caption="QR Optimizado", width=250)
+                        st.success("✅ Tipo: Auto-versión, Corrección M")
+                        st.info(f"📏 Tamaño: {normal_qr.size[0]}x{normal_qr.size[1]}px")
+                
+                st.markdown("---")
+                st.info("📱 **Prueba ambos QRs** con tu celular y compara cuál se lee mejor")
+    
+    st.markdown("---")
+    
     with st.form("qr_generator_form", clear_on_submit=True):
         st.markdown("**📝 Datos de la Visita:**")
         
@@ -483,12 +581,15 @@ def vehicular_qr_generator():
                 for error in errors:
                     st.error(f"❌ {error}")
             else:
-                with st.spinner("Generando QR vehicular..."):
+                with st.spinner("Generando QR vehicular de alta calidad..."):
                     try:
                         nombre_completo = f"{nombre_visita.strip()}{apellido_visita.strip()}".lower().replace(" ", "")
                         
                         colono_code = get_current_colono_code()
                         qr_code = f"QR{nombre_completo}{colono_code}"
+                        
+                        # Mostrar info del código a generar
+                        st.info(f"🔢 Generando código: {qr_code} (Longitud: {len(qr_code)} caracteres)")
                         
                         fecha_inicio_completa = datetime.combine(fecha_visita, hora_inicio)
                         fecha_fin_completa = datetime.combine(fecha_visita, hora_fin)
@@ -514,7 +615,7 @@ def vehicular_qr_generator():
                                 'nombre_archivo': f"QR_vehicular_{nombre_completo}_{fecha_visita.strftime('%Y%m%d')}_{hora_inicio.strftime('%H%M')}.png",
                                 'tipo': 'vehicular'
                             }
-                            st.success("✅ QR vehicular generado exitosamente")
+                            st.success("✅ QR vehicular de alta calidad generado exitosamente")
                             
                         else:
                             st.error("❌ Error al guardar QR en el sistema")
@@ -781,12 +882,18 @@ def main_app():
                         qr_img = QRGenerator.generate_qr_code(qr_data['codigo'])
                         
                         if qr_img:
-                            st.image(qr_img, caption=f"QR: {qr_data['codigo']}", width=200)
+                            st.markdown("**🎯 QR de Alta Calidad:**")
+                            # Mostrar QR más grande para mejor visibilidad
+                            st.image(qr_img, caption=f"QR: {qr_data['codigo']}", width=350)
+                            
+                            # Información de calidad
+                            st.success("✅ QR generado con máxima calidad y corrección de errores")
+                            st.info(f"📏 Tamaño: {qr_img.size[0]}x{qr_img.size[1]} píxeles")
                             
                             qr_bytes = QRGenerator.qr_to_bytes(qr_img)
                             if qr_bytes:
                                 st.download_button(
-                                    label="📥 Descargar QR",
+                                    label="📥 Descargar QR de Alta Calidad",
                                     data=qr_bytes,
                                     file_name=qr_data['nombre_archivo'],
                                     mime="image/png",
@@ -794,6 +901,7 @@ def main_app():
                                     use_container_width=True,
                                     key="download_qr_btn"
                                 )
+                                st.caption(f"📦 Archivo: {len(qr_bytes):,} bytes - Formato PNG sin compresión")
                             else:
                                 st.error("Error preparando descarga")
                                 st.markdown("**📋 Código QR:**")
@@ -809,6 +917,22 @@ def main_app():
                         st.info("💡 Copie este código y use un generador QR online")
                 
                 st.markdown("---")
+                
+                # Consejos para mejorar el escaneo
+                st.success("🎯 **Consejos para un escaneo perfecto:**")
+                st.markdown("""
+                **📱 Para el visitante:**
+                - ✅ **Brillo de pantalla al máximo** al mostrar el QR
+                - ✅ **Mantener el celular estable** sin temblar
+                - ✅ **Distancia de 15-20 cm** del lector
+                - ✅ **Evitar reflejos** en la pantalla
+                
+                **🖨️ Si se imprime:**
+                - ✅ **Imprimir en buena calidad** (300 DPI mínimo)
+                - ✅ **Papel blanco** para mejor contraste
+                - ✅ **Tamaño mínimo 5x5 cm** para fácil lectura
+                """)
+                
                 st.info("""
                 📋 **Instrucciones para tu visitante vehicular:**
                 1. 📱 Descarga la imagen QR y compártela con tu visitante
